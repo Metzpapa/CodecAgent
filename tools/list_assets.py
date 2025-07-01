@@ -1,0 +1,57 @@
+import os
+from typing import TYPE_CHECKING
+
+from tools.base import BaseTool, NoOpArgs
+
+# Use a forward reference for the State class to avoid circular imports.
+if TYPE_CHECKING:
+    from state import State
+
+
+class ListAssetsTool(BaseTool):
+    """A tool to list all available files in the assets directory."""
+
+    @property
+    def name(self) -> str:
+        return "list_assets"
+
+    @property
+    def description(self) -> str:
+        return "Recursively lists all available asset files (videos, images, audio) in the provided assets directory and its subdirectories. Use this to see what files you can work with."
+
+    @property
+    def args_schema(self):
+        return NoOpArgs
+
+    def execute(self, state: 'State', args: NoOpArgs) -> str:
+        """
+        Scans the assets directory and all its subdirectories, returning a
+        list of all found files, ignoring hidden system files.
+        """
+        assets_dir = state.assets_directory
+        found_files = []
+
+        if not os.path.isdir(assets_dir):
+            return f"Error: The assets directory '{assets_dir}' was not found."
+
+        try:
+            # os.walk recursively visits every directory and subdirectory.
+            for root, dirs, files in os.walk(assets_dir):
+                for filename in files:
+                    # Ignore hidden files (like .DS_Store)
+                    if filename.startswith('.'):
+                        continue
+
+                    # Get the full path of the file
+                    full_path = os.path.join(root, filename)
+                    # Get the path relative to the main assets directory for a cleaner output
+                    relative_path = os.path.relpath(full_path, assets_dir)
+                    found_files.append(relative_path)
+
+            if not found_files:
+                return "No asset files found in the directory or its subdirectories."
+
+            return "Here are the available assets:\n" + "\n".join(sorted(found_files))
+
+        except Exception as e:
+            return f"An error occurred while trying to list assets: {e}"
