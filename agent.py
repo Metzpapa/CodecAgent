@@ -32,7 +32,7 @@ class Agent:
         self.client = genai.Client(api_key=os.environ.get("GEMINI_API_KEY"))
 
         # We will use a model that supports function calling well.
-        self.model_name = "gemini-2.0-flash-001"
+        self.model_name = os.environ.get("GEMINI_MODEL_NAME", "gemini-2.5-pro")
 
         print("Loading tools...")
         self.tools = self._load_tools()
@@ -77,6 +77,21 @@ class Agent:
                 contents=self.state.history,
                 config=types.GenerateContentConfig(tools=self.google_tools),
             )
+
+            # --- Check for a valid response before proceeding ---
+            if not response.candidates:
+                # This can happen if the prompt or response was blocked for safety,
+                # or if the model had no valid response to give.
+                print("🤖 Agent did not return a candidate. Ending turn.")
+                # The `prompt_feedback` attribute can tell you if the prompt itself was blocked.
+                if hasattr(response, 'prompt_feedback') and response.prompt_feedback.block_reason:
+                    print(f"❌ The prompt was blocked. Reason: {response.prompt_feedback.block_reason.name}")
+                    print("   Please try rephrasing your request.")
+                else:
+                    # If the prompt was fine, the response generation was likely blocked.
+                    # The finish_reason of the (non-existent) candidate would usually tell us this.
+                    print("   The model's response was likely filtered for safety or other reasons.")
+                break # Exit the loop for this turn.
 
             # The full response from the model is always added to history for context.
             model_response_content = response.candidates[0].content
