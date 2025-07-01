@@ -11,7 +11,7 @@ class TimelineClip(BaseModel):
     source_path: str
     source_in_sec: float
     source_out_sec: float
-    source_total_duration_sec: float 
+    source_total_duration_sec: float
     timeline_start_sec: float
     duration_sec: float
     track_index: int
@@ -30,6 +30,11 @@ class State:
         self.assets_directory: str = assets_directory
         self.history: List[types.Content] = []
         self.timeline: List[TimelineClip] = []
+        # --- Core timeline properties ---
+        # These can be set explicitly or inferred at export time.
+        self.frame_rate: Optional[float] = None
+        self.width: Optional[int] = None
+        self.height: Optional[int] = None
 
     def _sort_timeline(self):
         """Internal helper to sort the timeline by track, then by start time."""

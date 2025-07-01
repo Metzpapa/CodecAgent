@@ -87,7 +87,6 @@ class AddToTimelineTool(BaseTool):
         # --- 2. Source File Metadata Validation ---
         try:
             probe = ffmpeg.probe(source_path)
-            # Use the same robust logic as the get_asset_info tool for consistency.
             video_stream = next((s for s in probe['streams'] if s['codec_type'] == 'video'), None)
             duration_str = video_stream.get('duration') if video_stream else probe['format'].get('duration')
             
@@ -107,7 +106,6 @@ class AddToTimelineTool(BaseTool):
             return "Error: The source_start_time must be before the source_end_time."
 
         # --- 3. Dispatch to Behavior Handler ---
-        # We pass source_duration down to the handlers now.
         if args.insertion_behavior == "append":
             return self._handle_append(state, args, source_path, source_start_sec, source_end_sec, source_duration)
         elif args.insertion_behavior == "insert":
@@ -126,7 +124,7 @@ class AddToTimelineTool(BaseTool):
             source_path=source_path,
             source_in_sec=source_start_sec,
             source_out_sec=source_end_sec,
-            source_total_duration_sec=source_duration, # <-- POPULATE NEW FIELD
+            source_total_duration_sec=source_duration,
             timeline_start_sec=timeline_start_sec,
             duration_sec=duration_sec,
             track_index=args.track_index,
@@ -139,7 +137,6 @@ class AddToTimelineTool(BaseTool):
         timeline_start_sec = self._hms_to_seconds(args.timeline_start_time)
         duration_sec = source_end_sec - source_start_sec
 
-        # Shift subsequent clips on the same track
         shifted_count = 0
         for clip in state.get_clips_on_track(args.track_index):
             if clip.timeline_start_sec >= timeline_start_sec:
@@ -151,7 +148,7 @@ class AddToTimelineTool(BaseTool):
             source_path=source_path,
             source_in_sec=source_start_sec,
             source_out_sec=source_end_sec,
-            source_total_duration_sec=source_duration, # <-- POPULATE NEW FIELD
+            source_total_duration_sec=source_duration,
             timeline_start_sec=timeline_start_sec,
             duration_sec=duration_sec,
             track_index=args.track_index,
@@ -169,16 +166,13 @@ class AddToTimelineTool(BaseTool):
         for clip in state.get_clips_on_track(args.track_index):
             clip_end_sec = clip.timeline_start_sec + clip.duration_sec
 
-            # Error case: The new clip would land in the middle of an existing clip.
             if clip.timeline_start_sec < timeline_start_sec and clip_end_sec > replace_end_sec:
                 return f"Error: This action would split the existing clip '{clip.clip_id}'. This is not supported. Please adjust the timeline or use an 'insert' operation."
 
-            # Check for any other overlap
             is_overlapping = max(clip.timeline_start_sec, timeline_start_sec) < min(clip_end_sec, replace_end_sec)
             if is_overlapping:
                 clips_to_delete.append(clip.clip_id)
 
-        # Perform deletions
         for clip_id in clips_to_delete:
             state.delete_clip(clip_id)
 
@@ -187,7 +181,7 @@ class AddToTimelineTool(BaseTool):
             source_path=source_path,
             source_in_sec=source_start_sec,
             source_out_sec=source_end_sec,
-            source_total_duration_sec=source_duration, # <-- POPULATE NEW FIELD
+            source_total_duration_sec=source_duration,
             timeline_start_sec=timeline_start_sec,
             duration_sec=duration_sec,
             track_index=args.track_index,
