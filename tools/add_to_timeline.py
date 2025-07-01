@@ -107,16 +107,17 @@ class AddToTimelineTool(BaseTool):
             return "Error: The source_start_time must be before the source_end_time."
 
         # --- 3. Dispatch to Behavior Handler ---
+        # We pass source_duration down to the handlers now.
         if args.insertion_behavior == "append":
-            return self._handle_append(state, args, source_path, source_start_sec, source_end_sec)
+            return self._handle_append(state, args, source_path, source_start_sec, source_end_sec, source_duration)
         elif args.insertion_behavior == "insert":
-            return self._handle_insert(state, args, source_path, source_start_sec, source_end_sec)
+            return self._handle_insert(state, args, source_path, source_start_sec, source_end_sec, source_duration)
         elif args.insertion_behavior == "replace":
-            return self._handle_replace(state, args, source_path, source_start_sec, source_end_sec)
+            return self._handle_replace(state, args, source_path, source_start_sec, source_end_sec, source_duration)
         
         return "Error: Unknown insertion behavior."
 
-    def _handle_append(self, state: 'State', args: AddToTimelineArgs, source_path: str, source_start_sec: float, source_end_sec: float) -> str:
+    def _handle_append(self, state: 'State', args: AddToTimelineArgs, source_path: str, source_start_sec: float, source_end_sec: float, source_duration: float) -> str:
         timeline_start_sec = state.get_track_duration(args.track_index)
         duration_sec = source_end_sec - source_start_sec
 
@@ -125,6 +126,7 @@ class AddToTimelineTool(BaseTool):
             source_path=source_path,
             source_in_sec=source_start_sec,
             source_out_sec=source_end_sec,
+            source_total_duration_sec=source_duration, # <-- POPULATE NEW FIELD
             timeline_start_sec=timeline_start_sec,
             duration_sec=duration_sec,
             track_index=args.track_index,
@@ -133,7 +135,7 @@ class AddToTimelineTool(BaseTool):
         state.add_clip(new_clip)
         return f"Successfully appended clip '{args.clip_id}' to the end of track {args.track_index} at {timeline_start_sec:.3f}s."
 
-    def _handle_insert(self, state: 'State', args: AddToTimelineArgs, source_path: str, source_start_sec: float, source_end_sec: float) -> str:
+    def _handle_insert(self, state: 'State', args: AddToTimelineArgs, source_path: str, source_start_sec: float, source_end_sec: float, source_duration: float) -> str:
         timeline_start_sec = self._hms_to_seconds(args.timeline_start_time)
         duration_sec = source_end_sec - source_start_sec
 
@@ -149,6 +151,7 @@ class AddToTimelineTool(BaseTool):
             source_path=source_path,
             source_in_sec=source_start_sec,
             source_out_sec=source_end_sec,
+            source_total_duration_sec=source_duration, # <-- POPULATE NEW FIELD
             timeline_start_sec=timeline_start_sec,
             duration_sec=duration_sec,
             track_index=args.track_index,
@@ -157,7 +160,7 @@ class AddToTimelineTool(BaseTool):
         state.add_clip(new_clip)
         return f"Successfully inserted clip '{args.clip_id}' on track {args.track_index} at {timeline_start_sec:.3f}s, shifting {shifted_count} other clips."
 
-    def _handle_replace(self, state: 'State', args: AddToTimelineArgs, source_path: str, source_start_sec: float, source_end_sec: float) -> str:
+    def _handle_replace(self, state: 'State', args: AddToTimelineArgs, source_path: str, source_start_sec: float, source_end_sec: float, source_duration: float) -> str:
         timeline_start_sec = self._hms_to_seconds(args.timeline_start_time)
         duration_sec = source_end_sec - source_start_sec
         replace_end_sec = timeline_start_sec + duration_sec
@@ -184,6 +187,7 @@ class AddToTimelineTool(BaseTool):
             source_path=source_path,
             source_in_sec=source_start_sec,
             source_out_sec=source_end_sec,
+            source_total_duration_sec=source_duration, # <-- POPULATE NEW FIELD
             timeline_start_sec=timeline_start_sec,
             duration_sec=duration_sec,
             track_index=args.track_index,

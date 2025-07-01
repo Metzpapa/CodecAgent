@@ -72,10 +72,15 @@ def main():
     check_api_key()
     print_startup_screen()
 
-    assets_directory = get_assets_directory()
+    assets_directory_input = get_assets_directory()
+
+    # Convert to an absolute path immediately to ensure all subsequent
+    # operations and file references are robust for export.
+    absolute_assets_directory = os.path.abspath(assets_directory_input)
+    print(f"✅ Using absolute path for assets: {absolute_assets_directory}\n")
 
     # Initialize state and agent once, so history is preserved across turns.
-    session_state = State(assets_directory=assets_directory)
+    session_state = State(assets_directory=absolute_assets_directory)
     video_agent = Agent(state=session_state)
 
     # --- Main Conversation Loop ---

@@ -11,6 +11,7 @@ class TimelineClip(BaseModel):
     source_path: str
     source_in_sec: float
     source_out_sec: float
+    source_total_duration_sec: float 
     timeline_start_sec: float
     duration_sec: float
     track_index: int

@@ -2,3 +2,4 @@ google-genai~=1.23.0
 pydantic~=2.7.0
 python-dotenv~=1.0.1
 ffmpeg-python~=0.2.0
+OpenTimelineIO-Plugins~=0.17.0
