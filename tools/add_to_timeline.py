@@ -1,4 +1,5 @@
 import os
+import math
 import ffmpeg
 from typing import Literal, Optional, TYPE_CHECKING
 from pydantic import BaseModel, Field
@@ -67,12 +68,21 @@ class AddToTimelineTool(BaseTool):
         return AddToTimelineArgs
 
     def _hms_to_seconds(self, time_str: str) -> float:
-        """Converts HH:MM:SS.mmm format to total seconds."""
+        """
+        Converts HH:MM:SS.mmm format to total seconds, correctly handling
+        partial milliseconds (e.g., '00:00:01.5' -> 1.5s).
+        """
         parts = time_str.split(':')
         h, m = int(parts[0]), int(parts[1])
         s_parts = parts[2].split('.')
         s = int(s_parts[0])
-        ms = int(s_parts[1]) if len(s_parts) > 1 else 0
+        
+        if len(s_parts) > 1:
+            ms_str = s_parts[1].ljust(3, '0')
+            ms = int(ms_str)
+        else:
+            ms = 0
+            
         return h * 3600 + m * 60 + s + ms / 1000.0
 
     def execute(self, state: 'State', args: AddToTimelineArgs) -> str:
@@ -96,7 +106,6 @@ class AddToTimelineTool(BaseTool):
                 return f"Error: Could not determine duration for source file '{args.source_filename}'."
             source_duration = float(duration_str)
 
-            # Capture source properties
             source_width = video_stream.get('width')
             source_height = video_stream.get('height')
             fr_str = video_stream.get('r_frame_rate', '0/1')
@@ -112,13 +121,20 @@ class AddToTimelineTool(BaseTool):
         source_start_sec = self._hms_to_seconds(args.source_start_time)
         source_end_sec = self._hms_to_seconds(args.source_end_time)
 
+        # --- THE CORRECTED FIX ---
+        # Fail if the end time is greater than the duration, UNLESS they are
+        # close enough to be considered equal (using a 10ms absolute tolerance).
+        if source_end_sec > source_duration and not math.isclose(source_end_sec, source_duration, abs_tol=0.01):
+            return f"Error: source_end_time ({source_end_sec:.3f}s) is beyond the source file's total duration ({source_duration:.3f}s)."
+
+        # If the requested end time is slightly beyond the actual duration due to rounding,
+        # cap it at the actual duration to ensure data integrity.
         if source_end_sec > source_duration:
-            return f"Error: source_end_time ({source_end_sec:.2f}s) is beyond the source file's total duration ({source_duration:.2f}s)."
+            source_end_sec = source_duration
 
         if source_start_sec >= source_end_sec:
             return "Error: The source_start_time must be before the source_end_time."
 
-        # Create a dictionary of the new clip's properties to avoid repetition
         clip_data = {
             "clip_id": args.clip_id,
             "source_path": source_path,
@@ -147,8 +163,15 @@ class AddToTimelineTool(BaseTool):
         timeline_start_sec = state.get_track_duration(clip_data['track_index'])
         clip_data['timeline_start_sec'] = timeline_start_sec
         
-        state.add_clip(TimelineClip(**clip_data))
-        return f"Successfully appended clip '{clip_data['clip_id']}' to the end of track {clip_data['track_index']} at {timeline_start_sec:.3f}s."
+        new_clip = TimelineClip(**clip_data)
+        state.add_clip(new_clip)
+        
+        new_track_duration = state.get_track_duration(new_clip.track_index)
+        return (
+            f"Successfully appended clip '{new_clip.clip_id}' (duration {new_clip.duration_sec:.3f}s) "
+            f"to track {new_clip.track_index} at {new_clip.timeline_start_sec:.3f}s. "
+            f"The new total duration of track {new_clip.track_index} is now {new_track_duration:.3f}s."
+        )
 
     def _handle_insert(self, state: 'State', args: AddToTimelineArgs, clip_data: dict) -> str:
         timeline_start_sec = self._hms_to_seconds(args.timeline_start_time)
@@ -161,8 +184,15 @@ class AddToTimelineTool(BaseTool):
                 clip.timeline_start_sec += duration_sec
                 shifted_count += 1
         
-        state.add_clip(TimelineClip(**clip_data))
-        return f"Successfully inserted clip '{clip_data['clip_id']}' on track {args.track_index} at {timeline_start_sec:.3f}s, shifting {shifted_count} other clips."
+        new_clip = TimelineClip(**clip_data)
+        state.add_clip(new_clip)
+
+        new_track_duration = state.get_track_duration(new_clip.track_index)
+        return (
+            f"Successfully inserted clip '{new_clip.clip_id}' (duration {new_clip.duration_sec:.3f}s) "
+            f"on track {new_clip.track_index} at {new_clip.timeline_start_sec:.3f}s, shifting {shifted_count} other clips. "
+            f"The new total duration of track {new_clip.track_index} is now {new_track_duration:.3f}s."
+        )
 
     def _handle_replace(self, state: 'State', args: AddToTimelineArgs, clip_data: dict) -> str:
         timeline_start_sec = self._hms_to_seconds(args.timeline_start_time)
@@ -184,7 +214,12 @@ class AddToTimelineTool(BaseTool):
         for clip_id in clips_to_delete:
             state.delete_clip(clip_id)
 
-        state.add_clip(TimelineClip(**clip_data))
+        new_clip = TimelineClip(**clip_data)
+        state.add_clip(new_clip)
         
-        deleted_msg = f"and deleted {len(clips_to_delete)} overlapping clips" if clips_to_delete else ""
-        return f"Successfully placed clip '{clip_data['clip_id']}' on track {args.track_index} at {timeline_start_sec:.3f}s {deleted_msg}."
+        new_track_duration = state.get_track_duration(new_clip.track_index)
+        return (
+            f"Successfully placed clip '{new_clip.clip_id}' (duration {new_clip.duration_sec:.3f}s) "
+            f"on track {new_clip.track_index} at {new_clip.timeline_start_sec:.3f}s, deleting {len(clips_to_delete)} overlapping clips. "
+            f"The new total duration of track {new_clip.track_index} is now {new_track_duration:.3f}s."
+        )
