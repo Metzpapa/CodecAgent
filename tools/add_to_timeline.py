@@ -88,11 +88,24 @@ class AddToTimelineTool(BaseTool):
         try:
             probe = ffmpeg.probe(source_path)
             video_stream = next((s for s in probe['streams'] if s['codec_type'] == 'video'), None)
-            duration_str = video_stream.get('duration') if video_stream else probe['format'].get('duration')
-            
+            if not video_stream:
+                return f"Error: Source file '{args.source_filename}' does not contain a video stream."
+
+            duration_str = video_stream.get('duration') or probe['format'].get('duration')
             if duration_str is None:
                 return f"Error: Could not determine duration for source file '{args.source_filename}'."
             source_duration = float(duration_str)
+
+            # Capture source properties
+            source_width = video_stream.get('width')
+            source_height = video_stream.get('height')
+            fr_str = video_stream.get('r_frame_rate', '0/1')
+            num, den = map(int, fr_str.split('/'))
+            source_fps = num / den if den > 0 else 0
+
+            if not all([source_width, source_height, source_fps > 0]):
+                 return f"Error: Could not read essential video properties (resolution, frame rate) from '{args.source_filename}'."
+
         except Exception as e:
             return f"Error: Could not read metadata from source file '{args.source_filename}'. It may be corrupt. FFmpeg error: {e}"
 
@@ -105,37 +118,42 @@ class AddToTimelineTool(BaseTool):
         if source_start_sec >= source_end_sec:
             return "Error: The source_start_time must be before the source_end_time."
 
+        # Create a dictionary of the new clip's properties to avoid repetition
+        clip_data = {
+            "clip_id": args.clip_id,
+            "source_path": source_path,
+            "source_in_sec": source_start_sec,
+            "source_out_sec": source_end_sec,
+            "source_total_duration_sec": source_duration,
+            "duration_sec": source_end_sec - source_start_sec,
+            "track_index": args.track_index,
+            "description": args.clip_description,
+            "source_frame_rate": source_fps,
+            "source_width": source_width,
+            "source_height": source_height,
+        }
+
         # --- 3. Dispatch to Behavior Handler ---
         if args.insertion_behavior == "append":
-            return self._handle_append(state, args, source_path, source_start_sec, source_end_sec, source_duration)
+            return self._handle_append(state, clip_data)
         elif args.insertion_behavior == "insert":
-            return self._handle_insert(state, args, source_path, source_start_sec, source_end_sec, source_duration)
+            return self._handle_insert(state, args, clip_data)
         elif args.insertion_behavior == "replace":
-            return self._handle_replace(state, args, source_path, source_start_sec, source_end_sec, source_duration)
+            return self._handle_replace(state, args, clip_data)
         
         return "Error: Unknown insertion behavior."
 
-    def _handle_append(self, state: 'State', args: AddToTimelineArgs, source_path: str, source_start_sec: float, source_end_sec: float, source_duration: float) -> str:
-        timeline_start_sec = state.get_track_duration(args.track_index)
-        duration_sec = source_end_sec - source_start_sec
+    def _handle_append(self, state: 'State', clip_data: dict) -> str:
+        timeline_start_sec = state.get_track_duration(clip_data['track_index'])
+        clip_data['timeline_start_sec'] = timeline_start_sec
+        
+        state.add_clip(TimelineClip(**clip_data))
+        return f"Successfully appended clip '{clip_data['clip_id']}' to the end of track {clip_data['track_index']} at {timeline_start_sec:.3f}s."
 
-        new_clip = TimelineClip(
-            clip_id=args.clip_id,
-            source_path=source_path,
-            source_in_sec=source_start_sec,
-            source_out_sec=source_end_sec,
-            source_total_duration_sec=source_duration,
-            timeline_start_sec=timeline_start_sec,
-            duration_sec=duration_sec,
-            track_index=args.track_index,
-            description=args.clip_description
-        )
-        state.add_clip(new_clip)
-        return f"Successfully appended clip '{args.clip_id}' to the end of track {args.track_index} at {timeline_start_sec:.3f}s."
-
-    def _handle_insert(self, state: 'State', args: AddToTimelineArgs, source_path: str, source_start_sec: float, source_end_sec: float, source_duration: float) -> str:
+    def _handle_insert(self, state: 'State', args: AddToTimelineArgs, clip_data: dict) -> str:
         timeline_start_sec = self._hms_to_seconds(args.timeline_start_time)
-        duration_sec = source_end_sec - source_start_sec
+        duration_sec = clip_data['duration_sec']
+        clip_data['timeline_start_sec'] = timeline_start_sec
 
         shifted_count = 0
         for clip in state.get_clips_on_track(args.track_index):
@@ -143,23 +161,13 @@ class AddToTimelineTool(BaseTool):
                 clip.timeline_start_sec += duration_sec
                 shifted_count += 1
         
-        new_clip = TimelineClip(
-            clip_id=args.clip_id,
-            source_path=source_path,
-            source_in_sec=source_start_sec,
-            source_out_sec=source_end_sec,
-            source_total_duration_sec=source_duration,
-            timeline_start_sec=timeline_start_sec,
-            duration_sec=duration_sec,
-            track_index=args.track_index,
-            description=args.clip_description
-        )
-        state.add_clip(new_clip)
-        return f"Successfully inserted clip '{args.clip_id}' on track {args.track_index} at {timeline_start_sec:.3f}s, shifting {shifted_count} other clips."
+        state.add_clip(TimelineClip(**clip_data))
+        return f"Successfully inserted clip '{clip_data['clip_id']}' on track {args.track_index} at {timeline_start_sec:.3f}s, shifting {shifted_count} other clips."
 
-    def _handle_replace(self, state: 'State', args: AddToTimelineArgs, source_path: str, source_start_sec: float, source_end_sec: float, source_duration: float) -> str:
+    def _handle_replace(self, state: 'State', args: AddToTimelineArgs, clip_data: dict) -> str:
         timeline_start_sec = self._hms_to_seconds(args.timeline_start_time)
-        duration_sec = source_end_sec - source_start_sec
+        duration_sec = clip_data['duration_sec']
+        clip_data['timeline_start_sec'] = timeline_start_sec
         replace_end_sec = timeline_start_sec + duration_sec
         
         clips_to_delete = []
@@ -176,18 +184,7 @@ class AddToTimelineTool(BaseTool):
         for clip_id in clips_to_delete:
             state.delete_clip(clip_id)
 
-        new_clip = TimelineClip(
-            clip_id=args.clip_id,
-            source_path=source_path,
-            source_in_sec=source_start_sec,
-            source_out_sec=source_end_sec,
-            source_total_duration_sec=source_duration,
-            timeline_start_sec=timeline_start_sec,
-            duration_sec=duration_sec,
-            track_index=args.track_index,
-            description=args.clip_description
-        )
-        state.add_clip(new_clip)
+        state.add_clip(TimelineClip(**clip_data))
         
         deleted_msg = f"and deleted {len(clips_to_delete)} overlapping clips" if clips_to_delete else ""
-        return f"Successfully placed clip '{args.clip_id}' on track {args.track_index} at {timeline_start_sec:.3f}s {deleted_msg}."
+        return f"Successfully placed clip '{clip_data['clip_id']}' on track {args.track_index} at {timeline_start_sec:.3f}s {deleted_msg}."

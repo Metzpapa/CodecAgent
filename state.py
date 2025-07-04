@@ -16,6 +16,9 @@ class TimelineClip(BaseModel):
     duration_sec: float
     track_index: int
     description: Optional[str] = None
+    source_frame_rate: float
+    source_width: int
+    source_height: int
 
 
 class State:
