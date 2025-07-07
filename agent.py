@@ -15,6 +15,11 @@ import tools
 from state import State
 from tools.base import BaseTool
 
+
+SYSTEM_PROMPT = """
+You are codec, a autonomous agent that edits videos.
+"""
+
 # This makes the logic explicit and easily extensible.
 MULTIMODAL_TOOLS = {"view_video"}
 
@@ -69,11 +74,19 @@ class Agent:
         self.state.history.append(types.Content(role="user", parts=[types.Part.from_text(text=prompt)]))
 
         while True:
+            # --- MODIFICATION: ADD SYSTEM PROMPT TO THE API CALL ---
+            # The system_instruction is passed in the config object along with the tools.
+            config = types.GenerateContentConfig(
+                tools=self.google_tools,
+                system_instruction=SYSTEM_PROMPT
+            )
+
             response = self.client.models.generate_content(
                 model=self.model_name,
                 contents=self.state.history,
-                config=types.GenerateContentConfig(tools=self.google_tools),
+                config=config,
             )
+            # --- END OF MODIFICATION ---
 
             if not response.candidates:
                 print("🤖 Agent did not return a candidate. Ending turn.")
@@ -113,7 +126,6 @@ class Agent:
                         print("🖼️  Agent received a multimodal response. Appending to history and continuing.")
                         self.state.history.append(tool_output)
                     else:
-                        # --- START OF FIX ---
                         # The tool returned an error string. We must report this specific error back.
                         print(f"🛠️ Special tool '{tool_name}' returned an error string: {tool_output}")
                         error_content = types.Content(role="tool", parts=[types.Part.from_function_response(
@@ -122,7 +134,6 @@ class Agent:
                             response={"error": tool_output}
                         )])
                         self.state.history.append(error_content)
-                        # --- END OF FIX ---
 
                 except Exception as e:
                     error_content = types.Content(role="tool", parts=[types.Part.from_function_response(

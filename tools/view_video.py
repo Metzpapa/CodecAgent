@@ -116,7 +116,7 @@ class ViewVideoTool(BaseTool):
         context_text = (
             f"SYSTEM: This is the output of the `view_video` tool you called for '{args.source_filename}'. "
             f"Displaying up to {args.num_frames} frames sampled between {start_sec:.2f}s and {end_sec:.2f}s. "
-            "Each image is a frame referenced by its URI at the timestamp noted in the accompanying text."
+            "Each image is a frame referenced by the timestamp noted in the accompanying text."
         )
         all_parts = [types.Part.from_text(text=context_text)]
 
