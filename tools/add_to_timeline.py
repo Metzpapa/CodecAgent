@@ -4,6 +4,7 @@ import ffmpeg
 from typing import Literal, Optional, TYPE_CHECKING
 from pydantic import BaseModel, Field
 
+from google import genai
 from .base import BaseTool
 from state import TimelineClip
 
@@ -85,7 +86,7 @@ class AddToTimelineTool(BaseTool):
             
         return h * 3600 + m * 60 + s + ms / 1000.0
 
-    def execute(self, state: 'State', args: AddToTimelineArgs) -> str:
+    def execute(self, state: 'State', args: AddToTimelineArgs, client: 'genai.Client') -> str:
         # --- 1. Pre-flight Validation ---
         if state.clip_id_exists(args.clip_id):
             return f"Error: A clip with the ID '{args.clip_id}' already exists. Please use a unique ID."

@@ -7,6 +7,7 @@ import opentimelineio as otio
 import ffmpeg
 from pydantic import BaseModel, Field
 
+from google import genai
 from .base import BaseTool
 from state import TimelineClip
 
@@ -44,7 +45,7 @@ class ExportTimelineTool(BaseTool):
 
     # --- REFACTORED EXECUTE METHOD (PLAN 1) ---
     # Notice how it now reads like a high-level summary of the steps.
-    def execute(self, state: 'State', args: ExportTimelineArgs) -> str:
+    def execute(self, state: 'State', args: ExportTimelineArgs, client: 'genai.Client') -> str:
         if not state.timeline:
             return "Error: The timeline is empty. Please add some clips before exporting."
 

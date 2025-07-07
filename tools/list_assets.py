@@ -1,6 +1,7 @@
 import os
 from typing import TYPE_CHECKING
 
+from google import genai
 from tools.base import BaseTool, NoOpArgs
 
 # Use a forward reference for the State class to avoid circular imports.
@@ -23,7 +24,7 @@ class ListAssetsTool(BaseTool):
     def args_schema(self):
         return NoOpArgs
 
-    def execute(self, state: 'State', args: NoOpArgs) -> str:
+    def execute(self, state: 'State', args: NoOpArgs, client: 'genai.Client') -> str:
         """
         Scans the assets directory and all its subdirectories, returning a
         list of all found files, ignoring hidden system files.

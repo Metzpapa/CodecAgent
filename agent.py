@@ -107,7 +107,7 @@ class Agent:
                 tool_to_execute = self.tools.get(tool_name)
                 try:
                     validated_args = tool_to_execute.args_schema(**tool_args)
-                    tool_output = tool_to_execute.execute(self.state, validated_args)
+                    tool_output = tool_to_execute.execute(self.state, validated_args, self.client)
                     
                     if isinstance(tool_output, types.Content):
                         print("🖼️  Agent received a multimodal response. Appending to history and continuing.")
@@ -146,7 +146,7 @@ class Agent:
                     else:
                         try:
                             validated_args = tool_to_execute.args_schema(**tool_args)
-                            result = tool_to_execute.execute(self.state, validated_args)
+                            result = tool_to_execute.execute(self.state, validated_args, self.client)
                         except Exception as e:
                             result = f"Error executing tool '{tool_name}': {e}"
                     

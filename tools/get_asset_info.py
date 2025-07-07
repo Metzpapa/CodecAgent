@@ -4,6 +4,7 @@ from typing import List, TYPE_CHECKING
 import ffmpeg
 from pydantic import BaseModel, Field
 
+from google import genai
 from tools.base import BaseTool
 
 # Use a forward reference for the State class to avoid circular imports.
@@ -37,7 +38,7 @@ class GetAssetInfoTool(BaseTool):
     def args_schema(self) -> type[BaseModel]:
         return GetAssetInfoArgs
 
-    def execute(self, state: 'State', args: GetAssetInfoArgs) -> str:
+    def execute(self, state: 'State', args: GetAssetInfoArgs, client: 'genai.Client') -> str:
         """
         Probes each requested file using ffmpeg to extract and format its metadata.
         """

@@ -83,25 +83,37 @@ def main():
     session_state = State(assets_directory=absolute_assets_directory)
     video_agent = Agent(state=session_state)
 
-    # --- Main Conversation Loop ---
-    prompt = get_initial_prompt()
+    # --- Main Conversation Loop wrapped in try...finally ---
+    try:
+        prompt = get_initial_prompt()
+        while True:
+            if not prompt:
+                prompt = input("➡️  You: ").strip()
+                continue
 
-    while True:
-        if not prompt:
-            # If the user just hits enter, prompt again without exiting.
-            prompt = input("➡️  You: ").strip()
-            continue
+            if prompt.lower().strip() in ["exit", "quit"]:
+                break
 
-        if prompt.lower().strip() in ["exit", "quit"]:
-            break
+            video_agent.run(prompt=prompt)
+            prompt = input("\n➡️  You: ").strip()
 
-        # Run the agent for one turn.
-        video_agent.run(prompt=prompt)
-
-        # Prompt for the next message in the conversation.
-        prompt = input("\n➡️  You: ").strip()
-
-    print("\n👋 Goodbye! Session ended.")
+    finally:
+        # --- THIS CLEANUP BLOCK WILL ALWAYS RUN ON EXIT ---
+        print("\nCleaning up session resources...")
+        if session_state.uploaded_files:
+            print(f"Deleting {len(session_state.uploaded_files)} uploaded files...")
+            for f in session_state.uploaded_files:
+                try:
+                    # Use the agent's client to delete the file by its name
+                    video_agent.client.files.delete(name=f.name)
+                    print(f"  - Deleted {f.display_name} ({f.name})")
+                except Exception as e:
+                    # Log if a specific file fails to delete, but continue trying others
+                    print(f"  - Failed to delete {f.name}: {e}")
+        else:
+            print("No uploaded files to clean up.")
+        
+        print("\n👋 Goodbye! Session ended.")
 
 
 if __name__ == "__main__":
