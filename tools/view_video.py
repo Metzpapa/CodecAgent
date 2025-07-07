@@ -1,9 +1,8 @@
-# codec/tools/view_video.py
-
 import os
 import ffmpeg
-from typing import Optional, TYPE_CHECKING
-from io import BytesIO  # <-- Import BytesIO
+from typing import Optional, TYPE_CHECKING, Union
+from io import BytesIO
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from pydantic import BaseModel, Field
 from google import genai
@@ -71,6 +70,49 @@ class ViewVideoTool(BaseTool):
         ms = int(s_parts[1].ljust(3, '0')) if len(s_parts) > 1 else 0
         return h * 3600 + m * 60 + s + ms / 1000.0
 
+    def _extract_and_upload_frame(
+        self,
+        ts: float,
+        full_path: str,
+        source_filename: str,
+        client: 'genai.Client'
+    ) -> Union[types.File, str]:
+        """
+        Extracts a single frame, uploads it, and returns the File object or an error string.
+        This function is designed to be run in a separate thread.
+        """
+        try:
+            # Step 1: Extract frame bytes
+            print(f"Extracting frame from {ts:.3f}s...")
+            out, err = (
+                ffmpeg.input(full_path, ss=ts)
+                .output('pipe:', vframes=1, format='image2', vcodec='mjpeg', strict='-2')
+                .run(capture_stdout=True, capture_stderr=True)
+            )
+            if not out:
+                raise ffmpeg.Error('ffmpeg', out, err)
+
+            # Step 2: Upload the frame bytes
+            print(f"Uploading frame from {ts:.3f}s...")
+            file_obj = BytesIO(out)
+            frame_file = client.files.upload(
+                file=file_obj,
+                config={
+                    "mimeType": "image/jpeg",
+                    "displayName": f"frame-{source_filename}-{ts:.2f}s"
+                }
+            )
+            print(f"Upload complete for frame at {ts:.3f}s. Name: {frame_file.name}")
+            return frame_file
+
+        except ffmpeg.Error as e:
+            error_details = e.stderr.decode().strip() if e.stderr else str(e)
+            print(f"FFmpeg error for frame at {ts:.3f}s: {error_details}")
+            return f"FFmpeg failed to extract frame. Details: {error_details}"
+        except Exception as e:
+            print(f"Upload error for frame at {ts:.3f}s: {e}")
+            return f"Failed to upload frame. Details: {str(e)}"
+
     def execute(self, state: 'State', args: ViewVideoArgs, client: 'genai.Client') -> str | types.Content:
         # --- 1. Validation & Setup ---
         full_path = os.path.join(state.assets_directory, args.source_filename)
@@ -101,8 +143,9 @@ class ViewVideoTool(BaseTool):
         if end_sec > source_duration:
             end_sec = source_duration
 
-        # --- 3. Timestamp Generation ---
-        duration_to_sample = end_sec - start_sec
+        safe_end_sec = min(end_sec, source_duration) - 0.05  # 50ms buffer so that ffmpeg doesn't fail at end of video
+        duration_to_sample = safe_end_sec - start_sec
+
         if duration_to_sample <= 0:
             timestamps = [start_sec]
         else:
@@ -112,60 +155,55 @@ class ViewVideoTool(BaseTool):
                 for i in range(args.num_frames)
             ]
 
-        # --- 4. Frame Extraction, UPLOAD, & Response Assembly ---
+        # --- 3. Parallel Frame Extraction & Upload ---
         context_text = (
             f"SYSTEM: This is the output of the `view_video` tool you called for '{args.source_filename}'. "
             f"Displaying up to {args.num_frames} frames sampled between {start_sec:.2f}s and {end_sec:.2f}s. "
             "Each image is a frame referenced by the timestamp noted in the accompanying text."
         )
         all_parts = [types.Part.from_text(text=context_text)]
+        
+        upload_results = []
+        # Use a thread pool to upload frames in parallel. max_workers can be tuned.
+        with ThreadPoolExecutor(max_workers=8) as executor:
+            # Map each timestamp to a future object
+            future_to_ts = {
+                executor.submit(
+                    self._extract_and_upload_frame, ts, full_path, args.source_filename, client
+                ): ts for ts in timestamps
+            }
 
-        for ts in timestamps:
-            try:
-                # Step 4a: Extract frame bytes
-                out, err = (
-                    ffmpeg.input(full_path, ss=ts)
-                    .output('pipe:', vframes=1, format='image2', vcodec='mjpeg', strict='-2')
-                    .run(capture_stdout=True, capture_stderr=True)
-                )
-                if not out:
-                    raise ffmpeg.Error('ffmpeg', out, err)
+            # Process futures as they complete to gather results
+            for future in as_completed(future_to_ts):
+                ts = future_to_ts[future]
+                try:
+                    # The result is either a types.File or an error string
+                    result = future.result()
+                    upload_results.append((ts, result))
+                except Exception as e:
+                    # This catches errors not handled inside the worker function
+                    print(f"Critical error for future of ts {ts:.3f}s: {e}")
+                    upload_results.append((ts, f"An unexpected system error occurred: {e}"))
 
-                # Step 4b: Upload the frame bytes using the correct signature
-                print(f"Uploading frame from {ts:.3f}s...")
-                
-                # --- START OF FIX ---
-                # The `file` parameter should be a file-like object (BytesIO).
-                # The MIME type and display name must be passed in a `config` dict,
-                # as shown in the working `oldcode`. This is the key to a successful upload.
-                file_obj = BytesIO(out)
-                frame_file = client.files.upload(
-                    file=file_obj,
-                    config={
-                        "mimeType": "image/jpeg",
-                        "displayName": f"frame-{args.source_filename}-{ts:.2f}s"
-                    }
-                )
-                # --- END OF FIX ---
+        # --- 4. Assemble Response from Sorted Results ---
+        # Sort results by timestamp to maintain chronological order for the LLM
+        upload_results.sort(key=lambda x: x[0])
 
-                print(f"Upload complete. URI: {frame_file.uri}, Name: {frame_file.name}")
-
-                # Step 4c: Store the file object in the state for later cleanup
+        for ts, result in upload_results:
+            if isinstance(result, types.File):
+                frame_file = result
+                # Store the file object in the state for later cleanup
                 state.uploaded_files.append(frame_file)
 
-                # Step 4d: Append the timestamp and the file URI part to the response
+                # Append the timestamp and the file URI part to the response
                 all_parts.append(types.Part.from_text(text=f"Frame at: {ts:.3f}s"))
                 all_parts.append(types.Part.from_uri(
                     file_uri=frame_file.uri,
                     mime_type='image/jpeg'
                 ))
-
-            except (ffmpeg.Error, Exception) as frame_e:
-                # Gracefully handle both FFmpeg and upload errors
-                error_details = str(frame_e)
-                if isinstance(frame_e, ffmpeg.Error) and frame_e.stderr:
-                    error_details = frame_e.stderr.decode().strip()
-                
+            else:
+                # Result is an error string from the worker function
+                error_details = result
                 all_parts.append(types.Part.from_text(
                     text=f"SYSTEM: Could not process frame at {ts:.3f}s. Error: {error_details}"
                 ))
