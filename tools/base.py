@@ -1,3 +1,5 @@
+# codec/tools/base.py
+
 import inspect
 from abc import ABC, abstractmethod
 from typing import Type, Dict, Any, TYPE_CHECKING
@@ -6,7 +8,6 @@ from google.genai import types
 from pydantic import BaseModel, Field
 
 # This import will only be processed by type checkers, not at runtime.
-# This resolves the "State is not defined" error in your IDE.
 if TYPE_CHECKING:
     from state import State
 
@@ -63,30 +64,45 @@ class BaseTool(ABC):
         """
         Converts the tool's Pydantic schema into a Google GenAI FunctionDeclaration.
 
-        This method introspects the `args_schema` Pydantic model and transforms
-        it into the format required by the Gemini API's `tools` parameter.
+        This method introspects the `args_schema` Pydantic model, transforms
+        it into the format required by the Gemini API's `tools` parameter,
+        and prunes unsupported validation fields.
         """
         schema_dict = self.args_schema.model_json_schema()
 
-        def uppercase_types(d: Dict[str, Any]) -> Dict[str, Any]:
-            if isinstance(d, dict):
-                for key, value in d.items():
-                    if key == 'type' and isinstance(value, str):
-                        d[key] = value.upper()
-                    else:
-                        uppercase_types(value)
-            elif isinstance(d, list):
-                for item in d:
-                    uppercase_types(item)
-            return d
+        # --- START OF THE FIX ---
+        # The Google API's Schema object doesn't support all JSON Schema validation keywords.
+        # We need to recursively sanitize the schema to remove unsupported fields like
+        # 'exclusiveMinimum', 'title', etc., which Pydantic adds automatically.
+        
+        # Define the set of keys that are allowed by the Google GenAI Schema.
+        ALLOWED_KEYS = {'type', 'description', 'format', 'enum', 'properties', 'required', 'items'}
 
-        uppercase_types(schema_dict)
+        def sanitize_and_uppercase(d: Dict[str, Any]) -> Dict[str, Any]:
+            if not isinstance(d, dict):
+                return d
+            
+            # Create a new dictionary containing only the allowed keys.
+            sanitized = {key: value for key, value in d.items() if key in ALLOWED_KEYS}
 
-        schema_dict.pop("title", None)
-        schema_dict.pop("description", None)
+            # Uppercase the 'type' field if it exists.
+            if 'type' in sanitized and isinstance(sanitized['type'], str):
+                sanitized['type'] = sanitized['type'].upper()
+
+            # Recurse into nested structures.
+            if 'properties' in sanitized:
+                sanitized['properties'] = {k: sanitize_and_uppercase(v) for k, v in sanitized['properties'].items()}
+            if 'items' in sanitized:
+                sanitized['items'] = sanitize_and_uppercase(sanitized['items'])
+            
+            return sanitized
+
+        # Sanitize the entire schema dictionary.
+        sanitized_schema = sanitize_and_uppercase(schema_dict)
+        # --- END OF THE FIX ---
 
         return types.FunctionDeclaration(
             name=self.name,
             description=self.description,
-            parameters=types.Schema(**schema_dict) if schema_dict.get("properties") else None,
+            parameters=types.Schema(**sanitized_schema) if sanitized_schema.get("properties") else None,
         )
