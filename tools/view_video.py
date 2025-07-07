@@ -5,6 +5,7 @@ import ffmpeg
 from typing import Optional, TYPE_CHECKING
 
 from pydantic import BaseModel, Field
+from google import genai
 from google.genai import types
 
 from .base import BaseTool
@@ -69,7 +70,7 @@ class ViewVideoTool(BaseTool):
         ms = int(s_parts[1].ljust(3, '0')) if len(s_parts) > 1 else 0
         return h * 3600 + m * 60 + s + ms / 1000.0
 
-    def execute(self, state: 'State', args: ViewVideoArgs) -> str | types.Content:
+    def execute(self, state: 'State', args: ViewVideoArgs, client: 'genai.Client') -> str | types.Content:
         # --- 1. Validation & Setup ---
         full_path = os.path.join(state.assets_directory, args.source_filename)
         if not os.path.exists(full_path):
@@ -99,53 +100,63 @@ class ViewVideoTool(BaseTool):
         if end_sec > source_duration:
             end_sec = source_duration
 
-        # --- 3. Timestamp Generation (THE FIX) ---
+        # --- 3. Timestamp Generation ---
         duration_to_sample = end_sec - start_sec
         if duration_to_sample <= 0:
-            # If the range is zero or negative, just sample the start.
             timestamps = [start_sec]
         else:
-            # Sample the midpoint of N equal segments to avoid sampling the exact end time.
-            # This is more robust and representative than sampling the start of each segment.
             segment_duration = duration_to_sample / args.num_frames
             timestamps = [
                 start_sec + (i * segment_duration) + (segment_duration / 2)
                 for i in range(args.num_frames)
             ]
 
-        # --- 4. Frame Extraction & Response Assembly ---
+        # --- 4. Frame Extraction, UPLOAD, & Response Assembly ---
         context_text = (
             f"SYSTEM: This is the output of the `view_video` tool you called for '{args.source_filename}'. "
             f"Displaying up to {args.num_frames} frames sampled between {start_sec:.2f}s and {end_sec:.2f}s. "
-            "Each image is a frame extracted at the timestamp noted in the accompanying text."
+            "Each image is a frame referenced by its URI at the timestamp noted in the accompanying text."
         )
         all_parts = [types.Part.from_text(text=context_text)]
 
         for ts in timestamps:
             try:
-                # We now capture stderr to get detailed error info, so quiet=True is removed.
+                # Step 4a: Extract frame bytes
                 out, err = (
                     ffmpeg.input(full_path, ss=ts)
                     .output('pipe:', vframes=1, format='image2', vcodec='mjpeg', strict='-2')
                     .run(capture_stdout=True, capture_stderr=True)
                 )
-
-                # CRITICAL FIX: Check if the output is empty. If it is, FFmpeg failed.
                 if not out:
-                    # Raise an error to be caught by the except block below.
-                    # This handles cases where FFmpeg runs but produces no image.
                     raise ffmpeg.Error('ffmpeg', out, err)
 
-                # On success, append both the timestamp text and the valid image data.
-                all_parts.append(types.Part.from_text(text=f"Frame at: {ts:.3f}s"))
-                all_parts.append(types.Part.from_bytes(data=out, mime_type='image/jpeg'))
+                # Step 4b: Upload the frame bytes to the File API
+                print(f"Uploading frame from {ts:.3f}s...")
+                frame_file = client.files.upload(
+                    file=out,
+                    mime_type='image/jpeg',
+                    display_name=f"{os.path.basename(args.source_filename)}-{ts:.3f}s.jpg"
+                )
+                print(f"Upload complete. URI: {frame_file.uri}")
 
-            except ffmpeg.Error as frame_e:
-                # If any single frame fails, we report it as part of the response
-                # instead of failing the whole tool call. This gives the model more context.
-                error_details = frame_e.stderr.decode().strip() if frame_e.stderr else "No error details available."
+                # Step 4c: Store the file object in the state for later cleanup
+                state.uploaded_files.append(frame_file)
+
+                # Step 4d: Append the timestamp and the file URI part to the response
+                all_parts.append(types.Part.from_text(text=f"Frame at: {ts:.3f}s"))
+                all_parts.append(types.Part.from_uri(
+                    file_uri=frame_file.uri,
+                    mime_type='image/jpeg'
+                ))
+
+            except (ffmpeg.Error, Exception) as frame_e:
+                # Gracefully handle both FFmpeg and upload errors
+                error_details = str(frame_e)
+                if isinstance(frame_e, ffmpeg.Error) and frame_e.stderr:
+                    error_details = frame_e.stderr.decode().strip()
+                
                 all_parts.append(types.Part.from_text(
-                    text=f"SYSTEM: Could not extract frame at {ts:.3f}s. FFmpeg error: {error_details}"
+                    text=f"SYSTEM: Could not process frame at {ts:.3f}s. Error: {error_details}"
                 ))
 
         return types.Content(role="user", parts=all_parts)

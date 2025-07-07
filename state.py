@@ -33,8 +33,7 @@ class State:
         self.assets_directory: str = assets_directory
         self.history: List[types.Content] = []
         self.timeline: List[TimelineClip] = []
-        # --- Core timeline properties ---
-        # These can be set explicitly or inferred at export time.
+        self.uploaded_files: List[types.File] = []
         self.frame_rate: Optional[float] = None
         self.width: Optional[int] = None
         self.height: Optional[int] = None

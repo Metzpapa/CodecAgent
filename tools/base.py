@@ -4,6 +4,7 @@ import inspect
 from abc import ABC, abstractmethod
 from typing import Type, Dict, Any, TYPE_CHECKING
 
+from google import genai
 from google.genai import types
 from pydantic import BaseModel, Field
 
@@ -46,7 +47,7 @@ class BaseTool(ABC):
         pass
 
     @abstractmethod
-    def execute(self, state: 'State', args: BaseModel) -> str:
+    def execute(self, state: 'State', args: BaseModel, client: 'genai.Client') -> str | types.Content:
         """
         The core logic of the tool.
 
@@ -54,9 +55,10 @@ class BaseTool(ABC):
             state: The current state of the agent, providing context like asset paths.
             args: A Pydantic model instance containing the validated arguments
                   provided by the LLM.
+            client: The Google GenAI client, for API calls like file uploads.
 
         Returns:
-            A string observation or result to be sent back to the LLM.
+            A string observation or result, or a multimodal Content object.
         """
         pass
 
@@ -70,7 +72,6 @@ class BaseTool(ABC):
         """
         schema_dict = self.args_schema.model_json_schema()
 
-        # --- START OF THE FIX ---
         # The Google API's Schema object doesn't support all JSON Schema validation keywords.
         # We need to recursively sanitize the schema to remove unsupported fields like
         # 'exclusiveMinimum', 'title', etc., which Pydantic adds automatically.
@@ -99,7 +100,6 @@ class BaseTool(ABC):
 
         # Sanitize the entire schema dictionary.
         sanitized_schema = sanitize_and_uppercase(schema_dict)
-        # --- END OF THE FIX ---
 
         return types.FunctionDeclaration(
             name=self.name,
