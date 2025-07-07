@@ -3,6 +3,7 @@
 import os
 import ffmpeg
 from typing import Optional, TYPE_CHECKING
+from io import BytesIO  # <-- Import BytesIO
 
 from pydantic import BaseModel, Field
 from google import genai
@@ -33,7 +34,7 @@ class ViewVideoArgs(BaseModel):
     )
     end_time: Optional[str] = Field(
         None,
-        description="The timestamp in the source video to stop extracting frames at. Format: HH:MM:SS.mmm. If omitted, uses the full video duration.",
+        description="The timestamp in a source video to stop extracting frames at. Format: HH:MM:SS.mmm. If omitted, uses the full video duration.",
         pattern=r'^\d{2}:\d{2}:\d{2}(\.\d{1,3})?$'
     )
 
@@ -130,14 +131,24 @@ class ViewVideoTool(BaseTool):
                 if not out:
                     raise ffmpeg.Error('ffmpeg', out, err)
 
-                # Step 4b: Upload the frame bytes to the File API
+                # Step 4b: Upload the frame bytes using the correct signature
                 print(f"Uploading frame from {ts:.3f}s...")
+                
+                # --- START OF FIX ---
+                # The `file` parameter should be a file-like object (BytesIO).
+                # The MIME type and display name must be passed in a `config` dict,
+                # as shown in the working `oldcode`. This is the key to a successful upload.
+                file_obj = BytesIO(out)
                 frame_file = client.files.upload(
-                    file=out,
-                    mime_type='image/jpeg',
-                    display_name=f"{os.path.basename(args.source_filename)}-{ts:.3f}s.jpg"
+                    file=file_obj,
+                    config={
+                        "mimeType": "image/jpeg",
+                        "displayName": f"frame-{args.source_filename}-{ts:.2f}s"
+                    }
                 )
-                print(f"Upload complete. URI: {frame_file.uri}")
+                # --- END OF FIX ---
+
+                print(f"Upload complete. URI: {frame_file.uri}, Name: {frame_file.name}")
 
                 # Step 4c: Store the file object in the state for later cleanup
                 state.uploaded_files.append(frame_file)
