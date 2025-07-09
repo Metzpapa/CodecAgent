@@ -74,8 +74,21 @@ class Agent:
         self.state.history.append(types.Content(role="user", parts=[types.Part.from_text(text=prompt)]))
 
         while True:
-            # --- MODIFICATION: ADD SYSTEM PROMPT TO THE API CALL ---
-            # The system_instruction is passed in the config object along with the tools.
+            # --- MODIFICATION: COUNT AND DISPLAY TOKENS ---
+            try:
+                # Count the tokens in the current conversation history.
+                token_count_response = self.client.models.count_tokens(
+                    model=self.model_name,
+                    contents=self.state.history,
+                    # Note: We don't include tools or system prompt here, as count_tokens
+                    # focuses on the `contents`. This gives us the size of the growing history.
+                )
+                print(f"\n📈 Context size before this turn: {token_count_response.total_tokens} tokens")
+            except Exception as e:
+                # Don't crash the agent if token counting fails.
+                print(f"⚠️  Could not count tokens: {e}")
+            # --- END OF MODIFICATION ---
+
             config = types.GenerateContentConfig(
                 tools=self.google_tools,
                 system_instruction=SYSTEM_PROMPT
@@ -86,7 +99,6 @@ class Agent:
                 contents=self.state.history,
                 config=config,
             )
-            # --- END OF MODIFICATION ---
 
             if not response.candidates:
                 print("🤖 Agent did not return a candidate. Ending turn.")
@@ -126,11 +138,9 @@ class Agent:
                         print("🖼️  Agent received a multimodal response. Appending to history and continuing.")
                         self.state.history.append(tool_output)
                     else:
-                        # The tool returned an error string. We must report this specific error back.
                         print(f"🛠️ Special tool '{tool_name}' returned an error string: {tool_output}")
                         error_content = types.Content(role="tool", parts=[types.Part.from_function_response(
                             name=tool_name,
-                            # Pass the actual error string from the tool back to the model.
                             response={"error": tool_output}
                         )])
                         self.state.history.append(error_content)
