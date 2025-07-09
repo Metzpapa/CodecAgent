@@ -21,7 +21,7 @@ You are codec, a autonomous agent that edits videos.
 """
 
 # This makes the logic explicit and easily extensible.
-MULTIMODAL_TOOLS = {"view_video"}
+MULTIMODAL_TOOLS = {"view_video", "extract_audio"}
 
 class Agent:
     """
