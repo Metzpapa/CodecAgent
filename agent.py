@@ -8,7 +8,6 @@ from typing import Dict
 
 from google import genai
 from google.genai import types
-from pydantic import BaseModel
 
 # Local imports
 import tools
@@ -20,8 +19,28 @@ SYSTEM_PROMPT = """
 You are codec, a autonomous agent that edits videos.
 """
 
-# This makes the logic explicit and easily extensible.
-MULTIMODAL_TOOLS = {"view_video", "extract_audio"}
+# All tools that return a `types.Content` object for the model to "perceive"
+# should be included here. This enables the agent to review its own work.
+MULTIMODAL_TOOLS = {"view_video", "extract_audio", "view_timeline", "extract_timeline_audio"}
+
+# Alias for brevity, improving readability in the validation block.
+FINISH = types.FinishReason
+
+# Define the set of finish reasons that indicate a blocked or incomplete response.
+# This is a robust way to handle various failure modes from the API.
+BLOCKED_FINISH_REASONS = {
+    FINISH.SAFETY,
+    FINISH.RECITATION,
+    FINISH.BLOCKLIST,
+    FINISH.PROHIBITED_CONTENT,
+    FINISH.SPII,
+    FINISH.IMAGE_SAFETY,
+    FINISH.MALFORMED_FUNCTION_CALL,
+    FINISH.OTHER,
+    FINISH.LANGUAGE,
+}
+# MAX_TOKENS is intentionally *not* included, as we often want to process partial output.
+
 
 class Agent:
     """
@@ -30,20 +49,16 @@ class Agent:
 
     def __init__(self, state: State):
         """
-        Initializes the agent.
-
-        Args:
-            state: The state object that holds the session's context.
+        Initializes the agent, loading the API client and discovering all available tools.
         """
         self.state = state
-
         self.client = genai.Client(api_key=os.environ.get("GEMINI_API_KEY"))
-        self.model_name = os.environ.get("GEMINI_MODEL_NAME", "gemini-2.5-pro")
+        self.model_name = os.environ.get("GEMINI_MODEL_NAME", "gemini-2.5-pro-latest")
 
         print("Loading tools...")
         self.tools = self._load_tools()
         function_declarations = [tool.to_google_tool() for tool in self.tools.values()]
-        self.google_tools = [types.Tool(function_declarations=function_declarations)]
+        self.google_tool_set = types.Tool(function_declarations=function_declarations)
         print(f"Loaded {len(self.tools)} tools: {', '.join(self.tools.keys())}")
 
     def _load_tools(self) -> Dict[str, BaseTool]:
@@ -63,9 +78,6 @@ class Agent:
     def run(self, prompt: str):
         """
         Starts the agent's execution loop for a single turn of conversation.
-
-        Args:
-            prompt: The user's request to the agent for this turn.
         """
         print("\n--- User Prompt ---")
         print(prompt)
@@ -74,23 +86,17 @@ class Agent:
         self.state.history.append(types.Content(role="user", parts=[types.Part.from_text(text=prompt)]))
 
         while True:
-            # --- MODIFICATION: COUNT AND DISPLAY TOKENS ---
             try:
-                # Count the tokens in the current conversation history.
                 token_count_response = self.client.models.count_tokens(
                     model=self.model_name,
                     contents=self.state.history,
-                    # Note: We don't include tools or system prompt here, as count_tokens
-                    # focuses on the `contents`. This gives us the size of the growing history.
                 )
                 print(f"\n📈 Context size before this turn: {token_count_response.total_tokens} tokens")
             except Exception as e:
-                # Don't crash the agent if token counting fails.
                 print(f"⚠️  Could not count tokens: {e}")
-            # --- END OF MODIFICATION ---
 
             config = types.GenerateContentConfig(
-                tools=self.google_tools,
+                tools=[self.google_tool_set],
                 system_instruction=SYSTEM_PROMPT
             )
 
@@ -100,28 +106,50 @@ class Agent:
                 config=config,
             )
 
-            if not response.candidates:
-                print("🤖 Agent did not return a candidate. Ending turn.")
-                if hasattr(response, 'prompt_feedback') and response.prompt_feedback.block_reason:
-                    print(f"❌ The prompt was blocked. Reason: {response.prompt_feedback.block_reason.name}")
-                    print("   Please try rephrasing your request.")
-                else:
-                    print("   The model's response was likely filtered for safety or other reasons.")
+            # --- BULLET-PROOF RESPONSE VALIDATION ---
+
+            if response.prompt_feedback and response.prompt_feedback.block_reason:
+                print(f"❌ The prompt was blocked. Reason: {response.prompt_feedback.block_reason.name}")
+                print("   Please try rephrasing your request.")
+                self.state.history.pop()
                 break
 
-            model_response_content = response.candidates[0].content
+            if not response.candidates:
+                print("🤖 Agent did not return a candidate. This might be due to a safety filter or other issue. Ending turn.")
+                break
+
+            candidate = response.candidates[0]
+            finish_reason = candidate.finish_reason or FINISH.FINISH_REASON_UNSPECIFIED
+
+            if finish_reason in BLOCKED_FINISH_REASONS:
+                print(f"❌ Response was blocked by the model. Reason: {finish_reason.name}")
+                if candidate.safety_ratings:
+                    for r in candidate.safety_ratings:
+                        print(f"   - {r.category.name}: {r.probability.name}")
+                break
+
+            model_response_content = candidate.content
+
+            if not model_response_content or not model_response_content.parts:
+                print(f"🤖 Agent returned an empty response. Finish Reason: {finish_reason.name}. Ending turn.")
+                break
+            # --- END OF VALIDATION BLOCK ---
+
             self.state.history.append(model_response_content)
 
-            text_parts = [part.text for part in model_response_content.parts if part.text]
-            function_calls = [part.function_call for part in model_response_content.parts if part.function_call]
+            # THIS IS THE FIX: Access .text and .function_calls from the top-level `response` object,
+            # which aggregates the content from the first candidate for convenience.
+            text = response.text
+            function_calls = response.function_calls
 
-            if text_parts:
-                print(f"🤖 Agent says: {''.join(text_parts)}")
+            if text:
+                print(f"🤖 Agent says: {text}")
 
             if not function_calls:
                 print("\n✅ Agent has finished its turn.")
                 break
 
+            # --- Tool execution logic ---
             special_call = next((fc for fc in function_calls if fc.name in MULTIMODAL_TOOLS), None)
 
             if special_call:
@@ -141,7 +169,7 @@ class Agent:
                         print(f"🛠️ Special tool '{tool_name}' returned an error string: {tool_output}")
                         error_content = types.Content(role="tool", parts=[types.Part.from_function_response(
                             name=tool_name,
-                            response={"error": tool_output}
+                            response={"error": str(tool_output)}
                         )])
                         self.state.history.append(error_content)
 
@@ -174,7 +202,7 @@ class Agent:
                     print(f"🛠️ Tool Result:\n{result}\n")
                     standard_tool_results.append(types.Part.from_function_response(
                         name=tool_name,
-                        response={"result": result},
+                        response={"result": str(result)},
                     ))
                 
                 self.state.history.append(types.Content(role="tool", parts=standard_tool_results))

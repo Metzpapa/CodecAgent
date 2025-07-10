@@ -2,7 +2,8 @@
 
 import os
 import tempfile
-from typing import Optional, TYPE_CHECKING
+from typing import Optional, TYPE_CHECKING, Union
+from pathlib import Path
 
 import ffmpeg
 from pydantic import BaseModel, Field
@@ -14,6 +15,54 @@ from .base import BaseTool
 # Use a forward reference for the State class to avoid circular imports.
 if TYPE_CHECKING:
     from state import State
+
+
+def _extract_and_upload_audio_segment(
+    file_path: Union[str, Path],
+    start_sec: float,
+    duration_sec: float,
+    display_name: str,
+    client: 'genai.Client',
+    tmpdir: str
+) -> Union[types.File, str]:
+    """
+    Core reusable logic to extract an audio segment from a media file, save it
+    temporarily, and upload it to the Gemini API.
+
+    Args:
+        file_path: The absolute path to the source media file.
+        start_sec: The start time of the segment to extract.
+        duration_sec: The duration of the segment to extract.
+        display_name: The display name for the uploaded file.
+        client: The genai.Client instance.
+        tmpdir: The temporary directory to store the extracted audio.
+
+    Returns:
+        A google.genai.types.File object on success, or an error string on failure.
+    """
+    output_path = Path(tmpdir) / f"audio_{os.path.basename(file_path)}_{start_sec:.2f}s.mp3"
+    try:
+        # 1. Extract audio using ffmpeg
+        (
+            ffmpeg.input(str(file_path), ss=start_sec, t=duration_sec)
+            .output(str(output_path), acodec='libmp3lame', audio_bitrate='192k', format='mp3')
+            .run(capture_stdout=True, capture_stderr=True, overwrite_output=True)
+        )
+
+        # 2. Upload the extracted audio
+        print(f"Uploading audio from '{display_name}' (duration: {duration_sec:.2f}s)...")
+        with open(output_path, "rb") as f:
+            audio_file = client.files.upload(
+                file=f,
+                config={"mimeType": "audio/mpeg", "displayName": display_name}
+            )
+        print(f"Upload complete for '{display_name}'. Name: {audio_file.name}")
+        return audio_file
+
+    except Exception as e:
+        error_msg = f"Failed to extract or upload audio for '{display_name}'. Details: {e}"
+        print(error_msg)
+        return error_msg
 
 
 class ExtractAudioArgs(BaseModel):
@@ -47,9 +96,9 @@ class ExtractAudioTool(BaseTool):
     @property
     def description(self) -> str:
         return (
-            "Extracts an audio segment from a video or audio file. "
-            "Use this to 'hear' the contents of the audio file. "
-            "This tool is best used for general understanding of the audio. As it allows you to 'hear' everything. Use this tool to extract the raw audio.  You should be analyzing the raw audio. "
+            "Extracts an audio segment from a single video or audio file. "
+            "Use this to 'hear' the contents of a source file. "
+            "To hear the audio from the composed timeline, use 'extract_timeline_audio'."
         )
 
     @property
@@ -98,39 +147,20 @@ class ExtractAudioTool(BaseTool):
         if duration_to_extract <= 0:
             return "Error: The calculated duration for extraction is zero or negative."
 
-        # --- 3. Audio Extraction ---
-        print(f"Extracting {duration_to_extract:.2f}s of audio from '{args.source_filename}' starting at {start_sec:.2f}s...")
+        # --- 3. Audio Extraction using the reusable helper ---
         with tempfile.TemporaryDirectory() as tmpdir:
-            output_path = os.path.join(tmpdir, "extracted_audio.mp3")
+            display_name = f"audio-{args.source_filename}-{start_sec:.2f}s-{end_sec:.2f}s"
+            result = _extract_and_upload_audio_segment(
+                full_path, start_sec, duration_to_extract, display_name, client, tmpdir
+            )
 
-            try:
-                (
-                    ffmpeg.input(full_path, ss=start_sec, t=duration_to_extract)
-                    .output(output_path, acodec='libmp3lame', audio_bitrate='192k', format='mp3')
-                    .run(capture_stdout=True, capture_stderr=True, overwrite_output=True)
-                )
-            except ffmpeg.Error as e:
-                return f"Error during audio extraction. Details: {e.stderr.decode()}"
+            if isinstance(result, str): # It's an error string
+                return result
 
-            # --- 4. Upload and Response Assembly ---
-            print(f"Extraction complete. Uploading '{output_path}'...")
-            try:
-                with open(output_path, "rb") as f:
-                    audio_file = client.files.upload(
-                        file=f,
-                        config={
-                            "mimeType": "audio/mpeg",
-                            "displayName": f"audio-{args.source_filename}-{start_sec:.2f}s-{end_sec:.2f}s"
-                        }
-                    )
-                print(f"Upload complete. File name: {audio_file.name}")
-            except Exception as e:
-                return f"Failed to upload extracted audio file. Details: {str(e)}"
-
-            # Add the file to the state for cleanup at the end of the session
+            audio_file = result
             state.uploaded_files.append(audio_file)
 
-            # Construct the multimodal response for the agent
+            # --- 4. Construct the multimodal response ---
             context_text = (
                 f"SYSTEM: This is the output of the `extract_audio` tool you called for '{args.source_filename}'. "
                 f"This is the audio content from {start_sec:.2f}s to {end_sec:.2f}s."

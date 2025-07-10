@@ -102,6 +102,10 @@ class AddToTimelineTool(BaseTool):
             if not video_stream:
                 return f"Error: Source file '{args.source_filename}' does not contain a video stream."
 
+            # --- MODIFIED: Check for audio stream here, once. ---
+            audio_stream = next((s for s in probe['streams'] if s['codec_type'] == 'audio'), None)
+            has_audio = audio_stream is not None
+
             duration_str = video_stream.get('duration') or probe['format'].get('duration')
             if duration_str is None:
                 return f"Error: Could not determine duration for source file '{args.source_filename}'."
@@ -148,6 +152,7 @@ class AddToTimelineTool(BaseTool):
             "source_frame_rate": source_fps,
             "source_width": source_width,
             "source_height": source_height,
+            "has_audio": has_audio, # <-- ADDED: Pass the flag
         }
 
         # --- 3. Dispatch to Behavior Handler ---

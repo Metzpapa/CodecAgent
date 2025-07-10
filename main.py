@@ -1,6 +1,19 @@
+# codec/main.py
+
 import os
 import sys
+import warnings
 from dotenv import load_dotenv
+
+# --- CONFIGURE WARNINGS FIRST ---
+# This ensures the filter is active before any other modules that might
+# trigger the warning are imported.
+warnings.filterwarnings(
+    "ignore",
+    message="there are non-text parts in the response",
+    category=UserWarning
+)
+# --------------------------------
 
 from agent import Agent
 from state import State
@@ -49,6 +62,7 @@ def get_assets_directory() -> str:
 
 def get_initial_prompt() -> str:
     """
+
     Prompts the user for the initial multi-line prompt.
     """
     print("➡️  Enter your initial editing instructions below.")

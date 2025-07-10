@@ -19,6 +19,7 @@ class TimelineClip(BaseModel):
     source_frame_rate: float
     source_width: int
     source_height: int
+    has_audio: bool # <-- ADDED: Flag to know if the source file has an audio track.
 
 
 class State:
