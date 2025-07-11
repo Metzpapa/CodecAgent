@@ -18,7 +18,7 @@ class ListAssetsTool(BaseTool):
 
     @property
     def description(self) -> str:
-        return "Recursively lists all available asset files (videos, images, audio) in the provided assets directory and its subdirectories. Use this to see what files you can work with."
+        return "Lists all available asset files (videos, images, audio) in the provided assets directory and its subdirectories. Use this to see what files you can work with. If you are ever confused on where to start, or don't know how complete a task, start here and coninue as necessary. "
 
     @property
     def args_schema(self):

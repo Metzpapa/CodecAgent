@@ -53,7 +53,7 @@ class Agent:
         """
         self.state = state
         self.client = genai.Client(api_key=os.environ.get("GEMINI_API_KEY"))
-        self.model_name = os.environ.get("GEMINI_MODEL_NAME", "gemini-2.5-pro-latest")
+        self.model_name = os.environ.get("GEMINI_MODEL_NAME", "gemini-2.5-flash-lite-preview-06-17") #gemini-2.5-flash-lite-preview-06-17
 
         print("Loading tools...")
         self.tools = self._load_tools()
