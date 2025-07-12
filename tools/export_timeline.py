@@ -135,7 +135,7 @@ class ExportTimelineTool(BaseTool):
                 if gap_duration > 0.001:
                     gap = otio.schema.Gap(source_range=otio.opentime.TimeRange(duration=otio.opentime.from_seconds(gap_duration, rate=fps)))
                     otio_video_track.append(gap)
-                    otio_audio_track.append(gap)
+                    otio_audio_track.append(gap.clone()) # <-- FIX: Use a clone
                 otio_clip = self._create_otio_clip(codec_clip, fps, base_path_for_relinking)
                 otio_video_track.append(otio_clip)
                 otio_audio_track.append(otio_clip.clone())

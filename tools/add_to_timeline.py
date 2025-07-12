@@ -1,7 +1,8 @@
+# codec/tools/add_to_timeline.py
 import os
 import math
 import ffmpeg
-from typing import Literal, Optional, TYPE_CHECKING
+from typing import Literal, Optional, TYPE_CHECKING, Tuple
 from pydantic import BaseModel, Field
 
 from google import genai
@@ -35,7 +36,7 @@ class AddToTimelineArgs(BaseModel):
     )
     timeline_start_time: str = Field(
         "00:00:00.000",
-        description="The timestamp on the main timeline where this new clip should be placed. This is ignored when using the 'append' behavior.",
+        description="The timestamp on the main timeline where this new clip should be placed. When using 'insert' behavior, this must be at an existing cut point. This is ignored when using 'append'.",
         pattern=r'^\d{2}:\d{2}:\d{2}(\.\d{1,3})?$'
     )
     track_index: int = Field(
@@ -49,7 +50,7 @@ class AddToTimelineArgs(BaseModel):
     )
     insertion_behavior: Literal["append", "insert", "replace"] = Field(
         "append",
-        description="Controls how the clip is added. 'append' adds to the end of a specific track. 'insert' shifts subsequent clips. 'replace' overwrites existing content."
+        description="Controls how the clip is added. 'append' adds to the end of a track. 'insert' shifts subsequent clips but requires placing at an existing cut. 'replace' overwrites existing content."
     )
 
 
@@ -62,7 +63,7 @@ class AddToTimelineTool(BaseTool):
 
     @property
     def description(self) -> str:
-        return "Adds a clip from a source file to the timeline. Supports appending to a track, inserting with a ripple effect, or replacing existing content."
+        return "Adds a clip from a source file to the timeline. Supports appending to a track, inserting at an existing cut point with a ripple effect, or replacing existing content."
 
     @property
     def args_schema(self):
@@ -85,6 +86,19 @@ class AddToTimelineTool(BaseTool):
             ms = 0
             
         return h * 3600 + m * 60 + s + ms / 1000.0
+    
+    def _get_or_infer_frame_rate(self, state: 'State') -> float:
+        """Gets sequence frame rate from state or infers it from the first video clip."""
+        if state.frame_rate:
+            return state.frame_rate
+        
+        first_video_clip = next((c for c in state.timeline if c.source_frame_rate > 0), None)
+        
+        if first_video_clip:
+            return first_video_clip.source_frame_rate
+        else:
+            # Return a sensible default if no video clips are on the timeline
+            return 24.0
 
     def execute(self, state: 'State', args: AddToTimelineArgs, client: 'genai.Client') -> str:
         # --- 1. Pre-flight Validation ---
@@ -102,7 +116,6 @@ class AddToTimelineTool(BaseTool):
             if not video_stream:
                 return f"Error: Source file '{args.source_filename}' does not contain a video stream."
 
-            # --- MODIFIED: Check for audio stream here, once. ---
             audio_stream = next((s for s in probe['streams'] if s['codec_type'] == 'audio'), None)
             has_audio = audio_stream is not None
 
@@ -126,14 +139,9 @@ class AddToTimelineTool(BaseTool):
         source_start_sec = self._hms_to_seconds(args.source_start_time)
         source_end_sec = self._hms_to_seconds(args.source_end_time)
 
-        # --- THE CORRECTED FIX ---
-        # Fail if the end time is greater than the duration, UNLESS they are
-        # close enough to be considered equal (using a 10ms absolute tolerance).
         if source_end_sec > source_duration and not math.isclose(source_end_sec, source_duration, abs_tol=0.01):
             return f"Error: source_end_time ({source_end_sec:.3f}s) is beyond the source file's total duration ({source_duration:.3f}s)."
 
-        # If the requested end time is slightly beyond the actual duration due to rounding,
-        # cap it at the actual duration to ensure data integrity.
         if source_end_sec > source_duration:
             source_end_sec = source_duration
 
@@ -152,7 +160,7 @@ class AddToTimelineTool(BaseTool):
             "source_frame_rate": source_fps,
             "source_width": source_width,
             "source_height": source_height,
-            "has_audio": has_audio, # <-- ADDED: Pass the flag
+            "has_audio": has_audio,
         }
 
         # --- 3. Dispatch to Behavior Handler ---
@@ -182,11 +190,46 @@ class AddToTimelineTool(BaseTool):
     def _handle_insert(self, state: 'State', args: AddToTimelineArgs, clip_data: dict) -> str:
         timeline_start_sec = self._hms_to_seconds(args.timeline_start_time)
         duration_sec = clip_data['duration_sec']
-        clip_data['timeline_start_sec'] = timeline_start_sec
+        
+        # --- "STRICT BUT HELPFUL" LOGIC ---
+        # 1. Define a tiny tolerance to account for float precision, not for "snapping".
+        #    Half a frame's duration is a perfect, context-aware tolerance.
+        timeline_fps = self._get_or_infer_frame_rate(state)
+        tolerance = (1.0 / timeline_fps) / 2.0 if timeline_fps > 0 else 0.001
 
+        # 2. Identify all valid cut points on the track.
+        #    A valid point is the start (0.0) or the exact end of any existing clip.
+        clips_on_track = state.get_clips_on_track(args.track_index)
+        valid_cut_points = {0.0}
+        for c in clips_on_track:
+            valid_cut_points.add(c.timeline_start_sec + c.duration_sec)
+
+        # 3. Check if the requested insertion time matches a valid cut point within tolerance.
+        snapped_start_time = None
+        for point in valid_cut_points:
+            if math.isclose(timeline_start_sec, point, abs_tol=tolerance):
+                snapped_start_time = point # Snap to the exact boundary for perfect alignment
+                break
+
+        # 4. If no match is found, fail with the "Golden Error Message".
+        if snapped_start_time is None:
+            sorted_points = sorted(list(valid_cut_points))
+            points_str = ", ".join([f"{p:.3f}s" for p in sorted_points])
+            return (
+                f"Error: No cut exists at the requested insertion time of {timeline_start_sec:.3f}s. "
+                f"Valid insertion points on track {args.track_index} are: [{points_str}]. "
+                "To create a new cut point, use the 'split_clip' tool. "
+                "To see which clips are at these boundaries, use 'get_timeline_summary'."
+            )
+
+        # --- If check passed, proceed with the ripple insert ---
+        clip_data['timeline_start_sec'] = snapped_start_time
+        
         shifted_count = 0
-        for clip in state.get_clips_on_track(args.track_index):
-            if clip.timeline_start_sec >= timeline_start_sec:
+        for clip in clips_on_track:
+            # If a clip starts at or after the insertion point, shift it right.
+            # Use the snapped time for comparison to avoid float precision issues.
+            if clip.timeline_start_sec >= snapped_start_time:
                 clip.timeline_start_sec += duration_sec
                 shifted_count += 1
         
@@ -210,8 +253,9 @@ class AddToTimelineTool(BaseTool):
         for clip in state.get_clips_on_track(args.track_index):
             clip_end_sec = clip.timeline_start_sec + clip.duration_sec
 
+            # Prevent splitting an existing clip, as it's an ambiguous operation.
             if clip.timeline_start_sec < timeline_start_sec and clip_end_sec > replace_end_sec:
-                return f"Error: This action would split the existing clip '{clip.clip_id}'. This is not supported. Please adjust the timeline or use an 'insert' operation."
+                return f"Error: This action would split the existing clip '{clip.clip_id}'. This is not supported. Please adjust the timeline or use an 'insert' operation at a boundary."
 
             is_overlapping = max(clip.timeline_start_sec, timeline_start_sec) < min(clip_end_sec, replace_end_sec)
             if is_overlapping:

@@ -1,3 +1,4 @@
+
 # codec/tools/get_timeline_summary.py
 
 import os
@@ -141,6 +142,9 @@ class GetTimelineSummaryTool(BaseTool):
                 if gap_duration > 0.001: # Use a small tolerance for floating point
                     output.append(f"\n  [GAP from {last_clip_end_time:.3f}s to {clip.timeline_start_sec:.3f}s (duration: {gap_duration:.3f}s)]")
 
+                # This check acts as a safety net to report data integrity issues.
+                if clip.timeline_start_sec < last_clip_end_time:
+                    output.append(f"\n  [!!! WARNING: OVERLAP DETECTED with previous clip !!!]")
                 clip_end_time = clip.timeline_start_sec + clip.duration_sec
                 clip_info = [
                     f"\n  - Clip ID: {clip.clip_id}",
