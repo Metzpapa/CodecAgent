@@ -22,16 +22,16 @@ class AddToTimelineArgs(BaseModel):
     )
     source_filename: str = Field(
         ...,
-        description="The exact name of the video file from the user's media library that this clip will be cut from (e.g., 'interview.mp4')."
+        description="The exact name of the video or image file from the media library that this clip will be cut from (e.g., 'interview.mp4', 'title_card.png')."
     )
     source_start_time: str = Field(
         ...,
-        description="The timestamp in the source video where the clip begins. Format: HH:MM:SS.mmm",
+        description="The timestamp where the clip begins in the source asset. For video, this is a specific time like '00:01:30.000'. For static images, this must be '00:00:00.000'.",
         pattern=r'^\d{2}:\d{2}:\d{2}(\.\d{1,3})?$'
     )
     source_end_time: str = Field(
         ...,
-        description="The timestamp in the source video where the clip ends. Format: HH:MM:SS.mmm",
+        description="The timestamp where the clip ends in the source asset. For video, this is a specific time. For static images, this defines the desired display duration (e.g., '00:00:05.000' shows the image for 5 seconds).",
         pattern=r'^\d{2}:\d{2}:\d{2}(\.\d{1,3})?$'
     )
     timeline_start_time: str = Field(
@@ -46,7 +46,7 @@ class AddToTimelineArgs(BaseModel):
     )
     clip_description: Optional[str] = Field(
         None,
-        description="A human-readable description for organizational purposes."
+        description="A description for organizational purposes. Use this to describe anything you want to remember about this clip, include specifics if necessary."
     )
     insertion_behavior: Literal["append", "insert", "replace"] = Field(
         "append",
@@ -63,7 +63,7 @@ class AddToTimelineTool(BaseTool):
 
     @property
     def description(self) -> str:
-        return "Adds a clip from a source file to the timeline. Supports appending to a track, inserting at an existing cut point with a ripple effect, or replacing existing content."
+        return "Adds a clip from a source file (video or image) to the timeline. Supports appending to a track, inserting at an existing cut point with a ripple effect, or replacing existing content."
 
     @property
     def args_schema(self):
@@ -109,52 +109,74 @@ class AddToTimelineTool(BaseTool):
         if not os.path.exists(source_path):
             return f"Error: The source file '{args.source_filename}' does not exist in the assets directory."
 
-        # --- 2. Source File Metadata Validation ---
+        # --- 2. Source File Metadata Extraction (Handles both video and images) ---
+        is_image = source_path.lower().endswith(('.png', '.jpg', '.jpeg', '.webp', '.bmp', '.tiff'))
+
         try:
             probe = ffmpeg.probe(source_path)
+            # All valid images and videos will have a 'video' stream for ffmpeg
             video_stream = next((s for s in probe['streams'] if s['codec_type'] == 'video'), None)
             if not video_stream:
-                return f"Error: Source file '{args.source_filename}' does not contain a video stream."
-
-            audio_stream = next((s for s in probe['streams'] if s['codec_type'] == 'audio'), None)
-            has_audio = audio_stream is not None
-
-            duration_str = video_stream.get('duration') or probe['format'].get('duration')
-            if duration_str is None:
-                return f"Error: Could not determine duration for source file '{args.source_filename}'."
-            source_duration = float(duration_str)
+                return f"Error: Source file '{args.source_filename}' does not contain a video stream or is not a supported image format."
 
             source_width = video_stream.get('width')
             source_height = video_stream.get('height')
-            fr_str = video_stream.get('r_frame_rate', '0/1')
-            num, den = map(int, fr_str.split('/'))
-            source_fps = num / den if den > 0 else 0
+            if not all([source_width, source_height]):
+                 return f"Error: Could not read resolution from '{args.source_filename}'."
 
-            if not all([source_width, source_height, source_fps > 0]):
-                 return f"Error: Could not read essential video properties (resolution, frame rate) from '{args.source_filename}'."
+            if is_image:
+                # --- Logic for Static Image Assets ---
+                source_start_sec_arg = self._hms_to_seconds(args.source_start_time)
+                if not math.isclose(source_start_sec_arg, 0.0, abs_tol=0.001):
+                    return f"Error: For image assets, 'source_start_time' must be '00:00:00.000'. You provided '{args.source_start_time}'."
+                
+                duration_sec = self._hms_to_seconds(args.source_end_time)
+                if duration_sec <= 0:
+                    return f"Error: For image assets, 'source_end_time' must represent a positive duration (e.g., '00:00:05.000'). You provided '{args.source_end_time}'."
 
+                source_in_sec = 0.0
+                source_out_sec = duration_sec
+                source_total_duration_sec = duration_sec
+                has_audio = False
+                # For OTIO compatibility, images need a frame rate. We infer it from the sequence.
+                source_fps = self._get_or_infer_frame_rate(state)
+            else:
+                # --- Logic for Video Assets ---
+                audio_stream = next((s for s in probe['streams'] if s['codec_type'] == 'audio'), None)
+                has_audio = audio_stream is not None
+
+                duration_str = video_stream.get('duration') or probe['format'].get('duration')
+                if duration_str is None:
+                    return f"Error: Could not determine duration for source file '{args.source_filename}'."
+                source_total_duration_sec = float(duration_str)
+
+                fr_str = video_stream.get('r_frame_rate', '0/1')
+                num, den = map(int, fr_str.split('/'))
+                source_fps = num / den if den > 0 else 0
+                if not source_fps > 0:
+                     return f"Error: Could not read a valid frame rate from '{args.source_filename}'."
+
+                source_in_sec = self._hms_to_seconds(args.source_start_time)
+                source_out_sec = self._hms_to_seconds(args.source_end_time)
+
+                if source_out_sec > source_total_duration_sec and not math.isclose(source_out_sec, source_total_duration_sec, abs_tol=0.01):
+                    return f"Error: source_end_time ({source_out_sec:.3f}s) is beyond the source file's total duration ({source_total_duration_sec:.3f}s)."
+                if source_out_sec > source_total_duration_sec:
+                    source_out_sec = source_total_duration_sec
+                if source_in_sec >= source_out_sec:
+                    return "Error: The source_start_time must be before the source_end_time."
+                duration_sec = source_out_sec - source_in_sec
         except Exception as e:
-            return f"Error: Could not read metadata from source file '{args.source_filename}'. It may be corrupt. FFmpeg error: {e}"
+            return f"Error: Could not read metadata from source file '{args.source_filename}'. It may be corrupt or an unsupported format. FFmpeg error: {e}"
 
-        source_start_sec = self._hms_to_seconds(args.source_start_time)
-        source_end_sec = self._hms_to_seconds(args.source_end_time)
-
-        if source_end_sec > source_duration and not math.isclose(source_end_sec, source_duration, abs_tol=0.01):
-            return f"Error: source_end_time ({source_end_sec:.3f}s) is beyond the source file's total duration ({source_duration:.3f}s)."
-
-        if source_end_sec > source_duration:
-            source_end_sec = source_duration
-
-        if source_start_sec >= source_end_sec:
-            return "Error: The source_start_time must be before the source_end_time."
-
+        # --- 3. Assemble Common Clip Data ---
         clip_data = {
             "clip_id": args.clip_id,
             "source_path": source_path,
-            "source_in_sec": source_start_sec,
-            "source_out_sec": source_end_sec,
-            "source_total_duration_sec": source_duration,
-            "duration_sec": source_end_sec - source_start_sec,
+            "source_in_sec": source_in_sec,
+            "source_out_sec": source_out_sec,
+            "source_total_duration_sec": source_total_duration_sec,
+            "duration_sec": duration_sec,
             "track_index": args.track_index,
             "description": args.clip_description,
             "source_frame_rate": source_fps,
@@ -163,7 +185,7 @@ class AddToTimelineTool(BaseTool):
             "has_audio": has_audio,
         }
 
-        # --- 3. Dispatch to Behavior Handler ---
+        # --- 4. Dispatch to Behavior Handler ---
         if args.insertion_behavior == "append":
             return self._handle_append(state, clip_data)
         elif args.insertion_behavior == "insert":

@@ -110,17 +110,35 @@ class ExportTimelineTool(BaseTool):
         return success_message
 
     def _get_or_infer_sequence_properties(self, state: 'State') -> Tuple[float, int, int]:
-        # ... (This function remains unchanged)
+        """
+        [MODIFIED FOR COHERENCE]
+        Infers sequence properties (resolution, frame rate).
+        It prioritizes video clips, but falls back to image clips if necessary.
+        """
         if all([state.frame_rate, state.width, state.height]):
             return (state.frame_rate, state.width, state.height)
+
+        # Prioritize inferring from a video clip for the most accurate frame rate
         first_video_clip = next((c for c in state.timeline if c.source_path.lower().endswith(('.mp4', '.mov', '.mkv', '.mxf'))), None)
-        if not first_video_clip:
-            raise ValueError("Could not determine timeline properties (frame rate, resolution). No video clips found on timeline to infer from.")
-        print(f"✅ Inferred sequence properties from '{os.path.basename(first_video_clip.source_path)}': {first_video_clip.source_width}x{first_video_clip.source_height} @ {first_video_clip.source_frame_rate:.2f} fps")
-        return (first_video_clip.source_frame_rate, first_video_clip.source_width, first_video_clip.source_height)
+        
+        clip_to_infer_from = first_video_clip
+
+        # If no video clip, fall back to the first clip on the timeline (which could be an image)
+        if not clip_to_infer_from and state.timeline:
+            clip_to_infer_from = state.timeline[0]
+
+        if not clip_to_infer_from:
+            raise ValueError("Could not determine timeline properties (frame rate, resolution). No clips found on timeline to infer from.")
+        
+        # The add_to_timeline tool ensures all these properties are valid, even for images.
+        print(f"✅ Inferred sequence properties from '{os.path.basename(clip_to_infer_from.source_path)}': {clip_to_infer_from.source_width}x{clip_to_infer_from.source_height} @ {clip_to_infer_from.source_frame_rate:.2f} fps")
+        return (clip_to_infer_from.source_frame_rate, clip_to_infer_from.source_width, clip_to_infer_from.source_height)
 
     def _build_otio_timeline(self, state: 'State', fps: float, width: int, height: int, base_path_for_relinking: Path) -> otio.schema.Timeline:
-        # ... (This function remains mostly unchanged, just passes the base_path down)
+        """
+        [MODIFIED FOR COHERENCE]
+        Builds the OTIO timeline, correctly handling clips with and without audio.
+        """
         otio_timeline = otio.schema.Timeline(name="Codec Agent Edit")
         self._inject_sequence_metadata(otio_timeline, fps, width, height)
         tracks_data: Dict[int, List[TimelineClip]] = defaultdict(list)
@@ -131,15 +149,28 @@ class ExportTimelineTool(BaseTool):
             otio_audio_track = otio.schema.Track(name=f"A{track_index+1}", kind=otio.schema.TrackKind.Audio)
             last_clip_end_time = 0.0
             for codec_clip in tracks_data[track_index]:
+                # Handle gap before the clip
                 gap_duration = codec_clip.timeline_start_sec - last_clip_end_time
                 if gap_duration > 0.001:
                     gap = otio.schema.Gap(source_range=otio.opentime.TimeRange(duration=otio.opentime.from_seconds(gap_duration, rate=fps)))
                     otio_video_track.append(gap)
-                    otio_audio_track.append(gap.clone()) # <-- FIX: Use a clone
+                    otio_audio_track.append(gap.clone())
+                
+                # Create the main OTIO clip for the video track
                 otio_clip = self._create_otio_clip(codec_clip, fps, base_path_for_relinking)
                 otio_video_track.append(otio_clip)
-                otio_audio_track.append(otio_clip.clone())
+
+                # Handle the corresponding audio track item
+                if codec_clip.has_audio:
+                    # If clip has audio, clone it for the audio track
+                    otio_audio_track.append(otio_clip.clone())
+                else:
+                    # If no audio (e.g., an image), fill the space with a silent gap to keep sync
+                    audio_gap = otio.schema.Gap(source_range=otio.opentime.TimeRange(duration=otio.opentime.from_seconds(codec_clip.duration_sec, rate=fps)))
+                    otio_audio_track.append(audio_gap)
+
                 last_clip_end_time = codec_clip.timeline_start_sec + codec_clip.duration_sec
+
             otio_timeline.tracks.append(otio_video_track)
             otio_timeline.tracks.append(otio_audio_track)
         return otio_timeline
