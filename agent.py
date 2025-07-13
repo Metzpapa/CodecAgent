@@ -17,6 +17,7 @@ from tools.base import BaseTool
 
 SYSTEM_PROMPT = """
 You are codec, a autonomous agent that edits videos.
+Please keep going until the user’s query is completely resolved, before ending your turn and yielding back to the user. Only terminate your turn when you are sure that the problem is solved.
 """
 
 # All tools that return a `types.Content` object for the model to "perceive"
@@ -97,7 +98,11 @@ class Agent:
 
             config = types.GenerateContentConfig(
                 tools=[self.google_tool_set],
-                system_instruction=SYSTEM_PROMPT
+                system_instruction=SYSTEM_PROMPT,
+                thinking_config=types.ThinkingConfig(
+                    include_thoughts=True
+                )
+                # ----------------------------------------------------
             )
 
             response = self.client.models.generate_content(
@@ -137,16 +142,33 @@ class Agent:
 
             self.state.history.append(model_response_content)
 
-            # THIS IS THE FIX: Access .text and .function_calls from the top-level `response` object,
-            # which aggregates the content from the first candidate for convenience.
-            text = response.text
+            # --- NEW: PROCESS RESPONSE PARTS FOR THOUGHTS AND TEXT ---
+            # We loop through the parts to handle thought summaries separately.
+            has_thoughts = False
+            has_text_response = False
+            for part in candidate.content.parts:
+                if part.thought:
+                    if not has_thoughts:
+                        print("\n🤔 Agent is thinking...")
+                        has_thoughts = True
+                    # The 'part.text' of a thought is the summary.
+                    print(part.text)
+                elif part.text:
+                    print(f"\n🤖 Agent says: {part.text}")
+                    has_text_response = True
+            
+            if has_thoughts:
+                print("------------------------")
+            # -----------------------------------------------------------
+
+            # Access function calls from the top-level response object.
             function_calls = response.function_calls
 
-            if text:
-                print(f"🤖 Agent says: {text}")
-
             if not function_calls:
-                print("\n✅ Agent has finished its turn.")
+                # If there was text or thoughts, the turn might not be "finished"
+                # in the sense of requiring more input, but it's done for now.
+                if has_text_response or has_thoughts:
+                     print("\n✅ Agent has finished its turn.")
                 break
 
             # --- Tool execution logic ---
