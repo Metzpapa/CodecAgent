@@ -36,8 +36,8 @@ class ExtractTimelineAudioArgs(BaseModel):
 
 class ExtractTimelineAudioTool(BaseTool):
     """
-    A tool to extract the audio from all clips within a given time range on the
-    timeline. Use this to 'hear' the current edit.
+    A tool to extract the audio from all clips on audio tracks within a given
+    time range on the timeline. Use this to 'hear' the current edit.
     """
 
     @property
@@ -47,9 +47,9 @@ class ExtractTimelineAudioTool(BaseTool):
     @property
     def description(self) -> str:
         return (
-            "Extracts the audio from all clips within a given time range on the timeline. "
-            "This is used to 'hear' the current edit. It returns separate audio segments for each clip found in the range, "
-            "allowing you to analyze the audio of the edit. To hear a single source file, use 'extract_audio'."
+            "Extracts the audio from all clips on audio tracks (A1, A2, etc.) within a given time range on the timeline. "
+            "This is used to 'hear' the current edit, mixing all audio sources. It returns separate audio segments for each clip found in the range. "
+            "To hear a single source file, use 'extract_audio'."
         )
 
     @property
@@ -69,7 +69,7 @@ class ExtractTimelineAudioTool(BaseTool):
         if not state.timeline:
             return "Error: The timeline is empty. Cannot extract audio from an empty timeline."
 
-        # --- 1. Determine Time Range & Find Overlapping Clips ---
+        # --- 1. Determine Time Range & Find Overlapping Audio Clips ---
         start_sec = self._hms_to_seconds(args.start_time) if args.start_time else 0.0
         end_sec = self._hms_to_seconds(args.end_time) if args.end_time else state.get_timeline_duration()
 
@@ -78,8 +78,8 @@ class ExtractTimelineAudioTool(BaseTool):
 
         tasks_to_process = []
         for clip in state.timeline:
-            # --- MODIFIED: The efficient check ---
-            if not clip.has_audio:
+            # --- MODIFIED: The efficient check using the new state model ---
+            if clip.track_type != 'audio' or not clip.has_audio:
                 continue
 
             clip_end_sec = clip.timeline_start_sec + clip.duration_sec
@@ -103,7 +103,7 @@ class ExtractTimelineAudioTool(BaseTool):
                 })
 
         if not tasks_to_process:
-            return f"No clips with audio were found in the specified timeline range ({start_sec:.2f}s to {end_sec:.2f}s)."
+            return f"No clips with audio were found on audio tracks in the specified timeline range ({start_sec:.2f}s to {end_sec:.2f}s)."
 
         # --- 2. Parallel Extraction and Upload using the shared helper ---
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -111,7 +111,7 @@ class ExtractTimelineAudioTool(BaseTool):
             
             upload_results = []
             with ThreadPoolExecutor(max_workers=16) as executor:
-                future_to_clip_id = {
+                future_to_clip = {
                     executor.submit(
                         _extract_and_upload_audio_segment,
                         task['clip'].source_path,
@@ -124,8 +124,8 @@ class ExtractTimelineAudioTool(BaseTool):
                     for task in tasks_to_process
                 }
 
-                for future in as_completed(future_to_clip_id):
-                    clip = future_to_clip_id[future]
+                for future in as_completed(future_to_clip):
+                    clip = future_to_clip[future]
                     try:
                         result = future.result()
                         upload_results.append((clip, result))
@@ -137,15 +137,16 @@ class ExtractTimelineAudioTool(BaseTool):
             
             context_text = (
                 f"SYSTEM: This is the output of the `extract_timeline_audio` tool. "
-                f"Extracted audio for {len(upload_results)} clips found between {start_sec:.2f}s and {end_sec:.2f}s of the timeline."
+                f"Extracted audio for {len(upload_results)} clips found on audio tracks between {start_sec:.2f}s and {end_sec:.2f}s of the timeline."
             )
             all_parts = [types.Part.from_text(text=context_text)]
             
             for clip, result in upload_results:
+                track_name = f"A{clip.track_number}"
                 if isinstance(result, types.File):
                     audio_file = result
                     state.uploaded_files.append(audio_file)
-                    all_parts.append(types.Part.from_text(text=f"Audio from clip: '{clip.clip_id}' (starts on timeline at {clip.timeline_start_sec:.3f}s)"))
+                    all_parts.append(types.Part.from_text(text=f"Audio from clip: '{clip.clip_id}' on track {track_name} (starts on timeline at {clip.timeline_start_sec:.3f}s)"))
                     all_parts.append(types.Part.from_uri(
                         file_uri=audio_file.uri,
                         mime_type='audio/mpeg'
@@ -153,7 +154,7 @@ class ExtractTimelineAudioTool(BaseTool):
                 else: # It's an error string
                     error_details = result
                     all_parts.append(types.Part.from_text(
-                        text=f"SYSTEM: Could not process audio for clip '{clip.clip_id}'. Error: {error_details}"
+                        text=f"SYSTEM: Could not process audio for clip '{clip.clip_id}' on track {track_name}. Error: {error_details}"
                     ))
             
             return types.Content(role="user", parts=all_parts)

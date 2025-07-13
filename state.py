@@ -1,12 +1,13 @@
 # codec/state.py
-from typing import List, Optional
-from pydantic import BaseModel
+from typing import List, Optional, Literal
+from pydantic import BaseModel, Field
 from google.genai import types
 
 
 class TimelineClip(BaseModel):
     """
-    Represents a single clip placed on the main timeline.
+    Represents a single clip placed on the main timeline, analogous to a clip
+    in a non-linear editor (NLE).
     """
     clip_id: str
     source_path: str
@@ -15,12 +16,26 @@ class TimelineClip(BaseModel):
     source_total_duration_sec: float
     timeline_start_sec: float
     duration_sec: float
-    track_index: int
-    description: Optional[str] = None
+    track_type: Literal['video', 'audio'] = Field(
+        ...,
+        description="The type of track the clip resides on ('video' or 'audio')."
+    )
+    track_number: int = Field(
+        ...,
+        ge=1,
+        description="The 1-based index for the track (e.g., V1, A2)."
+    )
+    description: Optional[str] = Field(
+        None,
+        description="A user-provided description for the clip's purpose, for the agent to remember context."
+    )
     source_frame_rate: float
     source_width: int
     source_height: int
-    has_audio: bool # <-- ADDED: Flag to know if the source file has an audio track.
+    has_audio: bool = Field(
+        ...,
+        description="Flag indicating if the original source file for this clip contains an audio stream."
+    )
 
 
 class State:
@@ -42,8 +57,12 @@ class State:
         self.initial_prompt: Optional[str] = None
 
     def _sort_timeline(self):
-        """Internal helper to sort the timeline by track, then by start time."""
-        self.timeline.sort(key=lambda clip: (clip.track_index, clip.timeline_start_sec))
+        """
+        Internal helper to sort the timeline by track type (video then audio),
+        then by track number, then by start time. This ensures a predictable
+        and NLE-like order.
+        """
+        self.timeline.sort(key=lambda clip: (clip.track_type, clip.track_number, clip.timeline_start_sec))
 
     # --- Public Timeline Management API ---
 
@@ -82,12 +101,12 @@ class State:
             default=0.0
         )
 
-    def get_track_duration(self, track_index: int) -> float:
+    def get_specific_track_duration(self, track_type: str, track_number: int) -> float:
         """
-        Calculates the total duration of a specific track by finding the
-        end point of the last clip on that track.
+        Calculates the total duration of a specific track (e.g., 'video', 1)
+        by finding the end point of the last clip on that track.
         """
-        clips_on_track = self.get_clips_on_track(track_index)
+        clips_on_track = self.get_clips_on_specific_track(track_type, track_number)
         if not clips_on_track:
             return 0.0
         
@@ -104,10 +123,12 @@ class State:
         """Checks if a clip_id is already in use on the timeline."""
         return any(clip.clip_id == clip_id for clip in self.timeline)
 
-    def get_clips_on_track(self, track_index: int) -> List[TimelineClip]:
+    def get_clips_on_specific_track(self, track_type: str, track_number: int) -> List[TimelineClip]:
         """
-        Returns a sorted list of all clips on a specific track.
-        This will be essential for the 'add_to_timeline' tool's logic.
+        Returns a sorted list of all clips on a specific track (e.g., 'video', 1).
         """
         # The main timeline is already sorted, so we can just filter.
-        return [clip for clip in self.timeline if clip.track_index == track_index]
+        return [
+            clip for clip in self.timeline
+            if clip.track_type == track_type and clip.track_number == track_number
+        ]

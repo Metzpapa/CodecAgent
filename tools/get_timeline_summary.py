@@ -1,4 +1,3 @@
-
 # codec/tools/get_timeline_summary.py
 
 import os
@@ -17,9 +16,10 @@ if TYPE_CHECKING:
 
 class GetTimelineSummaryArgs(BaseModel):
     """Arguments for the get_timeline_summary tool."""
-    track_index: Optional[int] = Field(
+    track: Optional[str] = Field(
         None,
-        description="Optional. If provided, the summary will only show clips on this specific track index (e.g., 0 for the first track)."
+        description="Optional. If provided, the summary will only show clips on this specific track (e.g., 'V1', 'A2').",
+        pattern=r"^[VAva]\d+$"
     )
     start_time: Optional[str] = Field(
         None,
@@ -64,13 +64,11 @@ class GetTimelineSummaryTool(BaseTool):
         if all([state.frame_rate, state.width, state.height]):
             return (state.frame_rate, state.width, state.height)
         
-        # Find the first clip with valid video properties to infer from
-        first_video_clip = next((c for c in state.timeline if c.source_width > 0 and c.source_height > 0 and c.source_frame_rate > 0), None)
+        first_video_clip = next((c for c in state.timeline if c.track_type == 'video'), None)
         
         if first_video_clip:
             return (first_video_clip.source_frame_rate, first_video_clip.source_width, first_video_clip.source_height)
         else:
-            # Return sensible defaults if no video clips are on the timeline
             return (24.0, 1920, 1080)
 
     def execute(self, state: 'State', args: GetTimelineSummaryArgs, client: 'genai.Client') -> str:
@@ -80,11 +78,18 @@ class GetTimelineSummaryTool(BaseTool):
         # --- 1. Parse and Apply Filters ---
         start_sec = self._hms_to_seconds(args.start_time) if args.start_time else None
         end_sec = self._hms_to_seconds(args.end_time) if args.end_time else None
-        is_filtered = any([args.track_index is not None, start_sec is not None, end_sec is not None])
+        
+        parsed_track_type = None
+        parsed_track_number = None
+        if args.track:
+            parsed_track_type = 'video' if args.track[0].lower() == 'v' else 'audio'
+            parsed_track_number = int(args.track[1:])
+
+        is_filtered = any([args.track, start_sec is not None, end_sec is not None])
 
         clips_to_display = state.timeline
-        if args.track_index is not None:
-            clips_to_display = [c for c in clips_to_display if c.track_index == args.track_index]
+        if parsed_track_type and parsed_track_number:
+            clips_to_display = [c for c in clips_to_display if c.track_type == parsed_track_type and c.track_number == parsed_track_number]
         if start_sec is not None:
             clips_to_display = [c for c in clips_to_display if c.timeline_start_sec >= start_sec]
         if end_sec is not None:
@@ -92,7 +97,7 @@ class GetTimelineSummaryTool(BaseTool):
 
         clips_by_track = defaultdict(list)
         for clip in clips_to_display:
-            clips_by_track[clip.track_index].append(clip)
+            clips_by_track[(clip.track_type, clip.track_number)].append(clip)
 
         # --- 2. Build Header ---
         output = []
@@ -103,15 +108,19 @@ class GetTimelineSummaryTool(BaseTool):
 
         total_duration = state.get_timeline_duration()
         fps, width, height = self._get_or_infer_sequence_properties(state)
+        all_tracks = set((c.track_type, c.track_number) for c in state.timeline)
+        num_video_tracks = len({t for t in all_tracks if t[0] == 'video'})
+        num_audio_tracks = len({t for t in all_tracks if t[0] == 'audio'})
+
         output.append(f"Total Duration: {total_duration:.3f}s")
         output.append(f"Sequence: {width}x{height} @ {fps:.2f}fps")
-        output.append(f"Total Tracks: {len(set(c.track_index for c in state.timeline)) if state.timeline else 0}")
+        output.append(f"Tracks: {num_video_tracks} Video, {num_audio_tracks} Audio")
         output.append(f"Total Clips: {len(state.timeline)}")
 
         if is_filtered:
             filter_lines = []
-            if args.track_index is not None:
-                filter_lines.append(f"Track: {args.track_index}")
+            if args.track:
+                filter_lines.append(f"Track: {args.track.upper()}")
             if start_sec is not None or end_sec is not None:
                 start_str = f"{start_sec:.3f}s" if start_sec is not None else "start"
                 end_str = f"{end_sec:.3f}s" if end_sec is not None else "end"
@@ -121,15 +130,20 @@ class GetTimelineSummaryTool(BaseTool):
         output.append("-" * 40)
 
         # --- 3. Build Track and Clip Details ---
-        track_indices_to_iterate = [args.track_index] if args.track_index is not None else sorted(list(set(c.track_index for c in state.timeline)))
+        if parsed_track_type and parsed_track_number:
+            tracks_to_iterate = [(parsed_track_type, parsed_track_number)]
+        else:
+            # Sort V tracks, then A tracks, both numerically
+            tracks_to_iterate = sorted(list(all_tracks), key=lambda t: (t[0], t[1]))
 
-        if not track_indices_to_iterate:
+        if not tracks_to_iterate:
             output.append("No tracks found.")
 
-        for track_index in track_indices_to_iterate:
-            output.append(f"\n--- Track {track_index} (V{track_index+1}/A{track_index+1}) ---")
+        for track_type, track_number in tracks_to_iterate:
+            track_name = f"{track_type[0].upper()}{track_number}"
+            output.append(f"\n--- Track {track_name} ---")
             
-            track_clips = clips_by_track.get(track_index, [])
+            track_clips = clips_by_track.get((track_type, track_number), [])
             
             if not track_clips:
                 output.append("  (No clips on this track match the specified filters)")
@@ -139,19 +153,19 @@ class GetTimelineSummaryTool(BaseTool):
             
             for clip in track_clips:
                 gap_duration = clip.timeline_start_sec - last_clip_end_time
-                if gap_duration > 0.001: # Use a small tolerance for floating point
+                if gap_duration > 0.001:
                     output.append(f"\n  [GAP from {last_clip_end_time:.3f}s to {clip.timeline_start_sec:.3f}s (duration: {gap_duration:.3f}s)]")
 
-                # This check acts as a safety net to report data integrity issues.
                 if clip.timeline_start_sec < last_clip_end_time:
                     output.append(f"\n  [!!! WARNING: OVERLAP DETECTED with previous clip !!!]")
+                
                 clip_end_time = clip.timeline_start_sec + clip.duration_sec
                 clip_info = [
                     f"\n  - Clip ID: {clip.clip_id}",
                     f"    Timeline: {clip.timeline_start_sec:.3f}s -> {clip_end_time:.3f}s (Duration: {clip.duration_sec:.3f}s)",
-                    f"    Source: {os.path.basename(clip.source_path)}",
-                    f"    Description: {clip.description or 'N/A'}",
-                    f"    Source In/Out: {clip.source_in_sec:.3f}s -> {clip.source_out_sec:.3f}s"
+                    f"    Source: {os.path.basename(clip.source_path)} ({'Video' if clip.track_type == 'video' else 'Audio'})",
+                    f"    Source In/Out: {clip.source_in_sec:.3f}s -> {clip.source_out_sec:.3f}s",
+                    f"    Description: {clip.description or 'N/A'}"
                 ]
                 output.extend(clip_info)
                 last_clip_end_time = clip_end_time

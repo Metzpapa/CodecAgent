@@ -53,6 +53,7 @@ class ViewTimelineTool(BaseTool):
     def description(self) -> str:
         return (
             "Extracts and displays a specified number of frames from the *rendered timeline* to 'see' the current edit. "
+            "This correctly handles video layers (e.g., V2 is shown on top of V1). "
             "Use this to get a visual overview, find specific scenes, or confirm the edit. The output will show which source clip each frame comes from. "
             "To view a single source file, use 'view_video'."
         )
@@ -85,34 +86,52 @@ class ViewTimelineTool(BaseTool):
         if duration_to_sample <= 0:
             timeline_timestamps = [start_sec]
         else:
+            # Sample frames from the middle of each segment for better representation
             segment_duration = duration_to_sample / args.num_frames
-            timeline_timestamps = [start_sec + (i * segment_duration) for i in range(args.num_frames)]
+            timeline_timestamps = [start_sec + (i * segment_duration) + (segment_duration / 2) for i in range(args.num_frames)]
 
-        # --- 2. Map Timeline Timestamps to Source Frames and Group by Source File ---
-        frames_by_source = defaultdict(list)
-        gaps = []
+        # --- 2. Map Timeline Timestamps to the Topmost Visible Source Frame ---
+        timeline_events = []
         for ts in timeline_timestamps:
-            found_clip = False
-            for clip in state.timeline:
-                clip_end_time = clip.timeline_start_sec + clip.duration_sec
-                if clip.timeline_start_sec <= ts < clip_end_time:
-                    source_time_offset = ts - clip.timeline_start_sec
-                    source_ts = clip.source_in_sec + source_time_offset
-                    frame_number = int(round(source_ts * clip.source_frame_rate))
-                    frames_by_source[clip.source_path].append({'timeline_ts': ts, 'frame_num': frame_number, 'clip': clip})
-                    found_clip = True
-                    break
-            if not found_clip:
-                gaps.append(ts)
+            # Find all active video clips at this timestamp
+            active_video_clips = [
+                clip for clip in state.timeline
+                if clip.track_type == 'video' and
+                   clip.timeline_start_sec <= ts < (clip.timeline_start_sec + clip.duration_sec)
+            ]
 
-        # --- 3. Batch Extraction per Source & Parallel Upload ---
+            if not active_video_clips:
+                timeline_events.append({'timeline_ts': ts, 'clip': None})
+                continue
+
+            # The topmost clip is the one with the highest track number
+            topmost_clip = max(active_video_clips, key=lambda c: c.track_number)
+            
+            source_time_offset = ts - topmost_clip.timeline_start_sec
+            source_ts = topmost_clip.source_in_sec + source_time_offset
+            
+            timeline_events.append({
+                'timeline_ts': ts,
+                'clip': topmost_clip,
+                'source_ts': source_ts
+            })
+
+        # --- 3. Group by Source File for Batch Extraction ---
+        frames_by_source = defaultdict(list)
+        for event in timeline_events:
+            if event['clip']:
+                clip = event['clip']
+                frame_number = int(round(event['source_ts'] * clip.source_frame_rate))
+                event['frame_num'] = frame_number # Store for later
+                frames_by_source[clip.source_path].append(event)
+
+        # --- 4. Batch Extraction per Source & Parallel Upload ---
         with tempfile.TemporaryDirectory() as tmpdir:
             print(f"Starting batch extraction for {len(frames_by_source)} source files...")
             
-            upload_results = {} # Maps timeline_ts -> result
+            upload_results = {} # Maps timeline_ts -> result (File or error string)
             with ThreadPoolExecutor(max_workers=16) as executor:
                 future_to_ts = {}
-                # Step 3a: Batch extract frames from each source file
                 for source_path, tasks in frames_by_source.items():
                     try:
                         frame_numbers = sorted(list(set([t['frame_num'] for t in tasks])))
@@ -124,7 +143,6 @@ class ViewTimelineTool(BaseTool):
 
                         extracted_files = sorted(Path(tmpdir).glob(f"{Path(source_path).stem}_frame_*.jpg"))
                         
-                        # Step 3b: Create upload tasks for the extracted files
                         tasks_sorted_by_frame = sorted(tasks, key=lambda t: t['frame_num'])
                         for i, task in enumerate(tasks_sorted_by_frame):
                             if i < len(extracted_files):
@@ -136,7 +154,6 @@ class ViewTimelineTool(BaseTool):
                         for task in tasks:
                             upload_results[task['timeline_ts']] = f"Failed to extract frames from {os.path.basename(source_path)}: {e}"
 
-                # Step 3c: Collect upload results
                 for future in as_completed(future_to_ts):
                     ts = future_to_ts[future]
                     try:
@@ -144,36 +161,32 @@ class ViewTimelineTool(BaseTool):
                     except Exception as e:
                         upload_results[ts] = f"Upload failed: {e}"
 
-            # --- 4. Assemble Response ---
+            # --- 5. Assemble Chronological Response ---
             all_parts = [types.Part.from_text(
                 text=f"SYSTEM: This is the output of the `view_timeline` tool. "
                      f"Displaying frames sampled between {start_sec:.2f}s and {end_sec:.2f}s of the timeline."
             )]
 
-            all_events = list(frames_by_source.values())
-            all_tasks = [item for sublist in all_events for item in sublist]
-            all_tasks.extend([{'timeline_ts': ts, 'clip': None} for ts in gaps])
-            all_tasks.sort(key=lambda x: x['timeline_ts'])
+            for event in sorted(timeline_events, key=lambda x: x['timeline_ts']):
+                ts = event['timeline_ts']
+                clip = event.get('clip')
 
-            for task in all_tasks:
-                ts = task['timeline_ts']
-                if not task.get('clip'):
-                    # THIS IS THE CORRECTED LINE
-                    all_parts.append(types.Part.from_text(text=f"Timeline at {ts:.3f}s: [GAP]"))
+                if not clip:
+                    all_parts.append(types.Part.from_text(text=f"Timeline at {ts:.3f}s: [GAP ON VIDEO TRACKS]"))
                     continue
 
                 result = upload_results.get(ts)
-                clip_id = task['clip'].clip_id
+                track_name = f"V{clip.track_number}"
                 
                 if isinstance(result, types.File):
                     frame_file = result
                     state.uploaded_files.append(frame_file)
-                    all_parts.append(types.Part.from_text(text=f"Timeline at {ts:.3f}s (from clip: '{clip_id}')"))
+                    all_parts.append(types.Part.from_text(text=f"Timeline at {ts:.3f}s (from clip: '{clip.clip_id}' on track {track_name})"))
                     all_parts.append(types.Part.from_uri(file_uri=frame_file.uri, mime_type='image/jpeg'))
                 else:
                     error_details = result or "Processing failed."
                     all_parts.append(types.Part.from_text(
-                        text=f"SYSTEM: Could not process frame from clip '{clip_id}' at timeline {ts:.3f}s. Error: {error_details}"
+                        text=f"SYSTEM: Could not process frame from clip '{clip.clip_id}' at timeline {ts:.3f}s. Error: {error_details}"
                     ))
             
             return types.Content(role="user", parts=all_parts)

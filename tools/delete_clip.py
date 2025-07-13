@@ -56,9 +56,10 @@ class DeleteClipTool(BaseTool):
             if not clip_to_delete:
                 return f"Error: No clip with the ID '{clip_id_to_delete}' was found on the timeline."
 
-            # Store properties needed for the ripple effect
+            # Store properties needed for the ripple effect using the new track model
             deleted_duration = clip_to_delete.duration_sec
-            deleted_track = clip_to_delete.track_index
+            deleted_track_type = clip_to_delete.track_type
+            deleted_track_number = clip_to_delete.track_number
             deleted_start_time = clip_to_delete.timeline_start_sec
 
             # Perform the deletion
@@ -67,14 +68,18 @@ class DeleteClipTool(BaseTool):
             # Apply the ripple effect to subsequent clips on the same track
             shifted_count = 0
             for clip in state.timeline:
-                if clip.track_index == deleted_track and clip.timeline_start_sec > deleted_start_time:
+                # Update the condition to use the new track model
+                if (clip.track_type == deleted_track_type and
+                    clip.track_number == deleted_track_number and
+                    clip.timeline_start_sec > deleted_start_time):
                     clip.timeline_start_sec -= deleted_duration
                     shifted_count += 1
             
             # Re-sort the timeline to ensure order is maintained after shifts
             state._sort_timeline()
 
-            return f"Successfully ripple-deleted clip '{clip_id_to_delete}', shifting {shifted_count} subsequent clips on track {deleted_track}."
+            track_name = f"{deleted_track_type[0].upper()}{deleted_track_number}"
+            return f"Successfully ripple-deleted clip '{clip_id_to_delete}', shifting {shifted_count} subsequent clips on track {track_name}."
 
         # --- 3. Standard (Batch) Delete Logic ---
         else:
