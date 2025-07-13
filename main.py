@@ -100,6 +100,7 @@ def main():
     # --- Main Conversation Loop wrapped in try...finally ---
     try:
         prompt = get_initial_prompt()
+        session_state.initial_prompt = prompt
         while True:
             if not prompt:
                 prompt = input("➡️  You: ").strip()

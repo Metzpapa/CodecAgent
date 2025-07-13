@@ -1,3 +1,4 @@
+# codec/state.py
 from typing import List, Optional
 from pydantic import BaseModel
 from google.genai import types
@@ -38,6 +39,7 @@ class State:
         self.frame_rate: Optional[float] = None
         self.width: Optional[int] = None
         self.height: Optional[int] = None
+        self.initial_prompt: Optional[str] = None
 
     def _sort_timeline(self):
         """Internal helper to sort the timeline by track, then by start time."""

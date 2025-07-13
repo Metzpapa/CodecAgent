@@ -15,9 +15,13 @@ from state import State
 from tools.base import BaseTool
 
 
-SYSTEM_PROMPT = """
+SYSTEM_PROMPT_TEMPLATE = """
 You are codec, a autonomous agent that edits videos.
-Please keep going until the user’s query is completely resolved, before ending your turn and yielding back to the user. Only terminate your turn when you are sure that the problem is solved.
+Users Request:
+{user_request}
+Please keep going until the user's request is completely resolved. If the request is generic, make a generic video.
+First, you should explore the media and get a lay of the land. This means viewing most of the media using the view_video and extract_audio tools. Once you understand what content you are working with, then you can start actually editing. The edit does not need to be perfect. 
+Once you have enough media to make an edit finalize the edit and export it for the user. **You cannot ask any questions to the user. Before at least giving the user a rough draft of the video**
 """
 
 # All tools that return a `types.Content` object for the model to "perceive"
@@ -86,6 +90,11 @@ class Agent:
 
         self.state.history.append(types.Content(role="user", parts=[types.Part.from_text(text=prompt)]))
 
+        # This check ensures that if the agent is run directly without the main loop's setup,
+        # it still captures the first prompt as the main goal.
+        if self.state.initial_prompt is None:
+            self.state.initial_prompt = prompt
+
         while True:
             try:
                 token_count_response = self.client.models.count_tokens(
@@ -96,9 +105,13 @@ class Agent:
             except Exception as e:
                 print(f"⚠️  Could not count tokens: {e}")
 
+            final_system_prompt = SYSTEM_PROMPT_TEMPLATE.format(
+                user_request=self.state.initial_prompt
+            )
+
             config = types.GenerateContentConfig(
                 tools=[self.google_tool_set],
-                system_instruction=SYSTEM_PROMPT,
+                system_instruction=final_system_prompt,
                 thinking_config=types.ThinkingConfig(
                     include_thoughts=True
                 )
