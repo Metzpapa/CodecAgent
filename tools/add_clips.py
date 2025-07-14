@@ -2,7 +2,7 @@
 import os
 import math
 import ffmpeg
-from typing import Literal, Optional, TYPE_CHECKING, List, Dict, Any
+from typing import Literal, Optional, TYPE_CHECKING, List, Dict, Any, Tuple
 from pydantic import BaseModel, Field
 from collections import defaultdict
 
@@ -64,6 +64,27 @@ class AddClipsArgs(BaseModel):
     )
 
 
+class _ValidatedClipInfo(BaseModel):
+    """Internal data structure to hold fully validated clip data before commit."""
+    # Core TimelineClip fields
+    clip_id: str
+    source_path: str
+    source_in_sec: float
+    source_out_sec: float
+    source_total_duration_sec: float
+    duration_sec: float
+    track_type: Literal['video', 'audio']
+    track_number: int
+    description: Optional[str]
+    source_frame_rate: float
+    source_width: int
+    source_height: int
+    has_audio: bool
+    # Metadata for the commit phase
+    timeline_start_sec: float
+    insertion_behavior: Literal["append", "insert", "replace"]
+
+
 class AddClipsTool(BaseTool):
     """
     A tool to add one or more new clips to the main timeline. This is the primary tool for building an edit.
@@ -102,138 +123,122 @@ class AddClipsTool(BaseTool):
         first_video_clip = next((c for c in state.timeline if c.track_type == 'video'), None)
         return first_video_clip.source_frame_rate if first_video_clip else 24.0
 
+    def _validate_single_clip(
+        self,
+        clip_def: ClipToAdd,
+        state: 'State',
+        temp_clip_ids: set,
+        temp_track_durations: Dict[Tuple[str, int], float]
+    ) -> Tuple[Optional[_ValidatedClipInfo], Optional[str]]:
+        """
+        Validates a single clip definition.
+        Returns a tuple of (_ValidatedClipInfo, None) on success, or (None, error_string) on failure.
+        """
+        # 1a. Unique Clip ID
+        if clip_def.clip_id in temp_clip_ids:
+            return None, "A clip with this ID already exists or is duplicated in this request."
+        
+        # 1b. Source File Exists
+        source_path = os.path.join(state.assets_directory, clip_def.source_filename)
+        if not os.path.exists(source_path):
+            return None, f"Source file '{clip_def.source_filename}' not found."
+
+        # 1c. Track Parsing
+        track_type = 'video' if clip_def.track[0].lower() == 'v' else 'audio'
+        track_number = int(clip_def.track[1:])
+
+        try:
+            # 1d. Probe and Media Type Validation
+            probe = ffmpeg.probe(source_path)
+            video_stream = next((s for s in probe['streams'] if s['codec_type'] == 'video'), None)
+            audio_stream = next((s for s in probe['streams'] if s['codec_type'] == 'audio'), None)
+
+            if track_type == 'video' and not video_stream:
+                return None, f"Cannot place '{clip_def.source_filename}' on a video track ('{clip_def.track}') because it contains no video stream."
+            if track_type == 'audio' and not audio_stream:
+                return None, f"Cannot place '{clip_def.source_filename}' on an audio track ('{clip_def.track}') because it contains no audio stream."
+
+            # 1e. Metadata Extraction (Image vs. Video/Audio)
+            is_image = source_path.lower().endswith(('.png', '.jpg', '.jpeg', '.webp'))
+            if is_image:
+                if track_type != 'video':
+                    return None, "Images can only be placed on video tracks."
+                if not math.isclose(self._hms_to_seconds(clip_def.source_in), 0.0):
+                    return None, "For images, 'source_in' must be '00:00:00.000'."
+                duration_sec = self._hms_to_seconds(clip_def.source_out)
+                if duration_sec <= 0:
+                    return None, "For images, 'source_out' must be a positive duration."
+                source_in_sec, source_out_sec = 0.0, duration_sec
+                source_total_duration_sec = duration_sec
+                source_fps = self._get_or_infer_frame_rate(state)
+                source_width, source_height = video_stream.get('width'), video_stream.get('height')
+            else: # Video or Audio-only
+                stream = video_stream if track_type == 'video' else audio_stream
+                duration_str = stream.get('duration') or probe['format'].get('duration')
+                if not duration_str:
+                    return None, "Could not determine source duration."
+                source_total_duration_sec = float(duration_str)
+                source_in_sec = self._hms_to_seconds(clip_def.source_in)
+                source_out_sec = self._hms_to_seconds(clip_def.source_out)
+
+                if source_out_sec > source_total_duration_sec and not math.isclose(source_out_sec, source_total_duration_sec, abs_tol=0.01):
+                    return None, f"source_out ({source_out_sec:.3f}s) is beyond the source's duration ({source_total_duration_sec:.3f}s)."
+                if source_in_sec >= source_out_sec:
+                    return None, "source_in must be before source_out."
+                duration_sec = source_out_sec - source_in_sec
+                
+                source_width = video_stream.get('width', 0) if video_stream else 0
+                source_height = video_stream.get('height', 0) if video_stream else 0
+                source_fps = 0.0
+                if video_stream and 'r_frame_rate' in video_stream:
+                    num, den = map(int, video_stream['r_frame_rate'].split('/'))
+                    if den > 0: source_fps = num / den
+
+            # 1f. Timeline Placement Validation
+            timeline_start_sec = self._hms_to_seconds(clip_def.timeline_start)
+            if clip_def.insertion_behavior == 'append':
+                track_key = (track_type, track_number)
+                if track_key not in temp_track_durations:
+                    temp_track_durations[track_key] = state.get_specific_track_duration(track_type, track_number)
+                timeline_start_sec = temp_track_durations[track_key]
+                temp_track_durations[track_key] += duration_sec
+            elif clip_def.insertion_behavior == 'insert':
+                timeline_fps = self._get_or_infer_frame_rate(state)
+                tolerance = (1.0 / timeline_fps) / 2.0 if timeline_fps > 0 else 0.001
+                clips_on_track = state.get_clips_on_specific_track(track_type, track_number)
+                valid_cut_points = {0.0} | {c.timeline_start_sec + c.duration_sec for c in clips_on_track}
+                if not any(math.isclose(timeline_start_sec, p, abs_tol=tolerance) for p in valid_cut_points):
+                    points_str = ", ".join([f"{p:.3f}s" for p in sorted(list(valid_cut_points))])
+                    return None, f"'insert' requires placing at a valid cut point. Valid points on track {clip_def.track} are: [{points_str}]."
+
+            # 1g. Assemble Validated Data
+            validated_info = _ValidatedClipInfo(
+                clip_id=clip_def.clip_id, source_path=source_path, source_in_sec=source_in_sec,
+                source_out_sec=source_out_sec, source_total_duration_sec=source_total_duration_sec,
+                duration_sec=duration_sec, track_type=track_type, track_number=track_number,
+                description=clip_def.description, source_frame_rate=source_fps, source_width=source_width,
+                source_height=source_height, has_audio=audio_stream is not None,
+                timeline_start_sec=timeline_start_sec, insertion_behavior=clip_def.insertion_behavior
+            )
+            return validated_info, None
+
+        except Exception as e:
+            return None, f"An unexpected error occurred during validation: {e}"
+
     def execute(self, state: 'State', args: AddClipsArgs, client: 'genai.Client') -> str:
         # --- PHASE 1: VALIDATION (ALL OR NOTHING) ---
-        validated_clip_data = []
+        validated_clips: List[_ValidatedClipInfo] = []
         errors = []
         temp_clip_ids = {c.clip_id for c in state.timeline}
-        temp_track_durations = {} # Used to correctly stack 'append' operations
+        temp_track_durations = {}  # Correctly stack 'append' operations within this call
 
         for i, clip_def in enumerate(args.clips):
-            error_prefix = f"Error in clip #{i+1} ('{clip_def.clip_id}'):"
-
-            # 1a. Unique Clip ID
-            if clip_def.clip_id in temp_clip_ids:
-                errors.append(f"{error_prefix} A clip with this ID already exists or is duplicated in this request.")
-                continue
-            temp_clip_ids.add(clip_def.clip_id)
-
-            # 1b. Source File Exists
-            source_path = os.path.join(state.assets_directory, clip_def.source_filename)
-            if not os.path.exists(source_path):
-                errors.append(f"{error_prefix} Source file '{clip_def.source_filename}' not found.")
-                continue
-
-            # 1c. Track Parsing & Validation
-            track_type_char = clip_def.track[0].lower()
-            track_number = int(clip_def.track[1:])
-            track_type = 'video' if track_type_char == 'v' else 'audio'
-
-            # 1d. Probe and Media Type Validation
-            try:
-                probe = ffmpeg.probe(source_path)
-                video_stream = next((s for s in probe['streams'] if s['codec_type'] == 'video'), None)
-                audio_stream = next((s for s in probe['streams'] if s['codec_type'] == 'audio'), None)
-
-                if track_type == 'video' and not video_stream:
-                    errors.append(f"{error_prefix} Cannot place '{clip_def.source_filename}' on a video track ('{clip_def.track}') because it contains no video stream.")
-                    continue
-                if track_type == 'audio' and not audio_stream:
-                    errors.append(f"{error_prefix} Cannot place '{clip_def.source_filename}' on an audio track ('{clip_def.track}') because it contains no audio stream.")
-                    continue
-
-                # 1e. Metadata Extraction (Image vs. Video/Audio)
-                is_image = source_path.lower().endswith(('.png', '.jpg', '.jpeg', '.webp'))
-
-                if is_image:
-                    if track_type != 'video':
-                        errors.append(f"{error_prefix} Images can only be placed on video tracks.")
-                        continue
-                    source_in_sec = self._hms_to_seconds(clip_def.source_in)
-                    if not math.isclose(source_in_sec, 0.0):
-                        errors.append(f"{error_prefix} For images, 'source_in' must be '00:00:00.000'.")
-                        continue
-                    duration_sec = self._hms_to_seconds(clip_def.source_out)
-                    if duration_sec <= 0:
-                        errors.append(f"{error_prefix} For images, 'source_out' must be a positive duration.")
-                        continue
-                    source_out_sec = duration_sec
-                    source_total_duration_sec = duration_sec
-                    source_fps = self._get_or_infer_frame_rate(state)
-                    source_width = video_stream.get('width')
-                    source_height = video_stream.get('height')
-                else: # Video or Audio-only
-                    stream = video_stream if track_type == 'video' else audio_stream
-                    duration_str = stream.get('duration') or probe['format'].get('duration')
-                    if not duration_str:
-                        errors.append(f"{error_prefix} Could not determine duration.")
-                        continue
-                    source_total_duration_sec = float(duration_str)
-                    source_in_sec = self._hms_to_seconds(clip_def.source_in)
-                    source_out_sec = self._hms_to_seconds(clip_def.source_out)
-
-                    if source_out_sec > source_total_duration_sec and not math.isclose(source_out_sec, source_total_duration_sec, abs_tol=0.01):
-                        errors.append(f"{error_prefix} source_out ({source_out_sec:.3f}s) is beyond the source's duration ({source_total_duration_sec:.3f}s).")
-                        continue
-                    if source_in_sec >= source_out_sec:
-                        errors.append(f"{error_prefix} source_in must be before source_out.")
-                        continue
-                    duration_sec = source_out_sec - source_in_sec
-                    
-                    source_width = video_stream.get('width', 0) if video_stream else 0
-                    source_height = video_stream.get('height', 0) if video_stream else 0
-                    if video_stream:
-                        fr_str = video_stream.get('r_frame_rate', '0/1')
-                        num, den = map(int, fr_str.split('/'))
-                        source_fps = num / den if den > 0 else 0.0
-                    else:
-                        source_fps = 0.0 # Audio-only files have no frame rate
-
-                # 1f. Timeline Placement Validation
-                timeline_start_sec = self._hms_to_seconds(clip_def.timeline_start)
-                
-                if clip_def.insertion_behavior == 'append':
-                    track_key = (track_type, track_number)
-                    if track_key not in temp_track_durations:
-                        temp_track_durations[track_key] = state.get_specific_track_duration(track_type, track_number)
-                    
-                    timeline_start_sec = temp_track_durations[track_key]
-                    temp_track_durations[track_key] += duration_sec
-
-                elif clip_def.insertion_behavior == 'insert':
-                    timeline_fps = self._get_or_infer_frame_rate(state)
-                    tolerance = (1.0 / timeline_fps) / 2.0 if timeline_fps > 0 else 0.001
-                    clips_on_track = state.get_clips_on_specific_track(track_type, track_number)
-                    valid_cut_points = {0.0} | {c.timeline_start_sec + c.duration_sec for c in clips_on_track}
-                    
-                    is_valid_cut = any(math.isclose(timeline_start_sec, p, abs_tol=tolerance) for p in valid_cut_points)
-                    if not is_valid_cut:
-                        points_str = ", ".join([f"{p:.3f}s" for p in sorted(list(valid_cut_points))])
-                        errors.append(f"{error_prefix} 'insert' requires placing at a valid cut point. Valid points on track {clip_def.track} are: [{points_str}].")
-                        continue
-
-                # 1g. Assemble Validated Data
-                validated_clip_data.append({
-                    "clip_id": clip_def.clip_id,
-                    "source_path": source_path,
-                    "source_in_sec": source_in_sec,
-                    "source_out_sec": source_out_sec,
-                    "source_total_duration_sec": source_total_duration_sec,
-                    "duration_sec": duration_sec,
-                    "track_type": track_type,
-                    "track_number": track_number,
-                    "description": clip_def.description,
-                    "source_frame_rate": source_fps,
-                    "source_width": source_width,
-                    "source_height": source_height,
-                    "has_audio": audio_stream is not None,
-                    # --- Metadata for commit phase ---
-                    "_timeline_start_sec": timeline_start_sec,
-                    "_insertion_behavior": clip_def.insertion_behavior,
-                })
-
-            except Exception as e:
-                errors.append(f"{error_prefix} An unexpected error occurred during validation: {e}")
+            validated_info, error = self._validate_single_clip(clip_def, state, temp_clip_ids, temp_track_durations)
+            if error:
+                errors.append(f"Error in clip #{i+1} ('{clip_def.clip_id}'): {error}")
+            else:
+                validated_clips.append(validated_info)
+                temp_clip_ids.add(validated_info.clip_id)
 
         if errors:
             return "Operation failed. Please fix the following errors:\n- " + "\n- ".join(errors)
@@ -241,65 +246,64 @@ class AddClipsTool(BaseTool):
         # --- PHASE 2: COMMIT (APPLY CHANGES TO STATE) ---
         
         # 2a. Handle 'replace' by identifying clips to delete
-        clips_to_add = [TimelineClip(**{k: v for k, v in d.items() if not k.startswith('_')}) for d in validated_clip_data]
-        final_clips_to_add = []
         ids_to_delete = set()
-        
-        for i, clip_def in enumerate(validated_clip_data):
-            if clip_def['_insertion_behavior'] == 'replace':
-                start = clip_def['_timeline_start_sec']
-                end = start + clip_def['duration_sec']
-                for existing_clip in state.get_clips_on_specific_track(clip_def['track_type'], clip_def['track_number']):
+        for clip in validated_clips:
+            if clip.insertion_behavior == 'replace':
+                start, end = clip.timeline_start_sec, clip.timeline_start_sec + clip.duration_sec
+                for existing_clip in state.get_clips_on_specific_track(clip.track_type, clip.track_number):
                     existing_end = existing_clip.timeline_start_sec + existing_clip.duration_sec
                     if max(existing_clip.timeline_start_sec, start) < min(existing_end, end):
                         ids_to_delete.add(existing_clip.clip_id)
         
-        # 2b. Handle 'insert' by calculating total time to shift at each point
+        # 2b. Handle 'insert': calculate total time to shift existing clips
         shifts = defaultdict(float)
-        for i, clip_def in enumerate(validated_clip_data):
-            if clip_def['_insertion_behavior'] == 'insert':
-                # Snap to the exact cut point to avoid float precision issues
-                timeline_fps = self._get_or_infer_frame_rate(state)
-                tolerance = (1.0 / timeline_fps) / 2.0 if timeline_fps > 0 else 0.001
-                clips_on_track = state.get_clips_on_specific_track(clip_def['track_type'], clip_def['track_number'])
-                valid_cut_points = {0.0} | {c.timeline_start_sec + c.duration_sec for c in clips_on_track}
-                
-                snapped_start_time = min(valid_cut_points, key=lambda p: abs(p - clip_def['_timeline_start_sec']))
-                
-                key = (clip_def['track_type'], clip_def['track_number'], snapped_start_time)
-                shifts[key] += clip_def['duration_sec']
+        for clip in validated_clips:
+            if clip.insertion_behavior == 'insert':
+                key = (clip.track_type, clip.track_number, clip.timeline_start_sec)
+                shifts[key] += clip.duration_sec
 
         # 2c. Apply changes to a new timeline list
         new_timeline = []
         for clip in state.timeline:
             if clip.clip_id in ids_to_delete:
-                continue # Clip is deleted by a 'replace' operation
+                continue  # Clip is deleted by a 'replace' operation
 
-            # Calculate total shift for this clip
             total_shift = 0.0
             for (track_type, track_number, insert_point), duration in shifts.items():
+                # A clip is shifted if it's on the same track and starts at or after the insertion point
                 if clip.track_type == track_type and clip.track_number == track_number and clip.timeline_start_sec >= insert_point:
                     total_shift += duration
             
             clip.timeline_start_sec += total_shift
             new_timeline.append(clip)
 
-        # 2d. Add the new clips
-        for i, clip_def in enumerate(validated_clip_data):
-            new_clip_obj = clips_to_add[i]
-            new_clip_obj.timeline_start_sec = clip_def['_timeline_start_sec']
+        # 2d. Add the new clips, correctly handling sequential inserts
+        insert_cursors = defaultdict(float) # Tracks start time for sequential inserts
+        for clip_info in validated_clips:
+            final_start_time = clip_info.timeline_start_sec
             
-            # For inserts, the start time also needs to be shifted by other inserts at the same point
-            if clip_def['_insertion_behavior'] == 'insert':
-                # This is complex. A simpler model is that all inserts at a point happen "at once".
-                # The shifting logic above handles this correctly for existing clips.
-                # The new clips are just placed at their calculated start times.
-                pass
+            if clip_info.insertion_behavior == 'insert':
+                key = (clip_info.track_type, clip_info.track_number, clip_info.timeline_start_sec)
+                if key not in insert_cursors:
+                    insert_cursors[key] = clip_info.timeline_start_sec # Initialize cursor
+                
+                final_start_time = insert_cursors[key]
+                insert_cursors[key] += clip_info.duration_sec # Move cursor for next insert at this point
 
-            new_timeline.append(new_clip_obj)
+            new_clip = TimelineClip(
+                clip_id=clip_info.clip_id, source_path=clip_info.source_path,
+                source_in_sec=clip_info.source_in_sec, source_out_sec=clip_info.source_out_sec,
+                source_total_duration_sec=clip_info.source_total_duration_sec,
+                timeline_start_sec=final_start_time, duration_sec=clip_info.duration_sec,
+                track_type=clip_info.track_type, track_number=clip_info.track_number,
+                description=clip_info.description, source_frame_rate=clip_info.source_frame_rate,
+                source_width=clip_info.source_width, source_height=clip_info.source_height,
+                has_audio=clip_info.has_audio
+            )
+            new_timeline.append(new_clip)
 
         # 2e. Finalize state
         state.timeline = new_timeline
         state._sort_timeline()
 
-        return f"Successfully added {len(validated_clip_data)} clips to the timeline."
+        return f"Successfully added {len(validated_clips)} clips to the timeline."
