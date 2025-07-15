@@ -1,5 +1,5 @@
 # codec/state.py
-from typing import List, Optional, Literal
+from typing import List, Optional, Literal, Tuple
 from pydantic import BaseModel, Field
 from google.genai import types
 
@@ -114,6 +114,32 @@ class State:
             (clip.timeline_start_sec + clip.duration_sec for clip in clips_on_track),
             default=0.0
         )
+
+    def get_sequence_properties(self) -> Tuple[float, int, int]:
+        """
+        Gets sequence properties from state or infers them from the first video clip.
+        It caches the result in the state object for subsequent calls.
+
+        Returns:
+            A tuple of (frame_rate, width, height).
+        """
+        # 1. Check if properties are already set (cached)
+        if all([self.frame_rate, self.width, self.height]):
+            return (self.frame_rate, self.width, self.height)
+
+        # 2. Infer from the first clip on a video track
+        first_video_clip = next((c for c in self.timeline if c.track_type == 'video'), None)
+        
+        if not first_video_clip:
+            # 3. If no video, maybe there's only audio? Fallback to a default.
+            return (24.0, 1920, 1080)
+        
+        # 4. Set the inferred properties on the state for future calls (caching)
+        self.frame_rate = first_video_clip.source_frame_rate
+        self.width = first_video_clip.source_width
+        self.height = first_video_clip.source_height
+        
+        return (self.frame_rate, self.width, self.height)
 
     def find_clip_by_id(self, clip_id: str) -> Optional[TimelineClip]:
         """Finds a clip on the timeline by its unique clip_id."""

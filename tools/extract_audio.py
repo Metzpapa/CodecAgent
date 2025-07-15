@@ -11,6 +11,7 @@ from google import genai
 from google.genai import types
 
 from .base import BaseTool
+from utils import hms_to_seconds, probe_media_file # <-- MODIFIED IMPORT
 
 # Use a forward reference for the State class to avoid circular imports.
 if TYPE_CHECKING:
@@ -105,14 +106,7 @@ class ExtractAudioTool(BaseTool):
     def args_schema(self):
         return ExtractAudioArgs
 
-    def _hms_to_seconds(self, time_str: str) -> float:
-        """Converts HH:MM:SS.mmm format to total seconds."""
-        parts = time_str.split(':')
-        h, m = int(parts[0]), int(parts[1])
-        s_parts = parts[2].split('.')
-        s = int(s_parts[0])
-        ms = int(s_parts[1].ljust(3, '0')) if len(s_parts) > 1 else 0
-        return h * 3600 + m * 60 + s + ms / 1000.0
+    # REMOVED: _hms_to_seconds helper function
 
     def execute(self, state: 'State', args: ExtractAudioArgs, client: 'genai.Client') -> str | types.Content:
         # --- 1. Validation & Setup ---
@@ -120,22 +114,22 @@ class ExtractAudioTool(BaseTool):
         if not os.path.exists(full_path):
             return f"Error: The source file '{args.source_filename}' does not exist in the assets directory."
 
-        try:
-            probe = ffmpeg.probe(full_path)
-            audio_stream = next((s for s in probe['streams'] if s['codec_type'] == 'audio'), None)
-            if not audio_stream:
-                return f"Error: Source file '{args.source_filename}' does not contain an audio stream."
+        # Use the new utility to probe the file
+        media_info = probe_media_file(full_path)
+        if media_info.error:
+            return f"Error probing '{args.source_filename}': {media_info.error}"
+        
+        if not media_info.has_audio:
+            return f"Error: Source file '{args.source_filename}' does not contain an audio stream."
+        
+        if media_info.duration_sec <= 0:
+            return f"Error: Could not determine a valid duration for '{args.source_filename}'."
 
-            duration_str = audio_stream.get('duration') or probe['format'].get('duration', '0')
-            source_duration = float(duration_str)
-            if source_duration <= 0:
-                return f"Error: Could not determine a valid duration for '{args.source_filename}'."
-        except ffmpeg.Error as e:
-            return f"Error: Failed to probe '{args.source_filename}'. It may be corrupt or not a valid media file. FFmpeg error: {e.stderr.decode()}"
+        source_duration = media_info.duration_sec
 
         # --- 2. Time Calculation ---
-        start_sec = self._hms_to_seconds(args.start_time) if args.start_time else 0.0
-        end_sec = self._hms_to_seconds(args.end_time) if args.end_time else source_duration
+        start_sec = hms_to_seconds(args.start_time) if args.start_time else 0.0
+        end_sec = hms_to_seconds(args.end_time) if args.end_time else source_duration
 
         if start_sec >= end_sec:
             return "Error: The start_time must be before the end_time."

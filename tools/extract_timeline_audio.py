@@ -14,6 +14,7 @@ from google.genai import types
 from .base import BaseTool
 from state import TimelineClip
 from .extract_audio import _extract_and_upload_audio_segment # REUSING THE HELPER
+from utils import hms_to_seconds # <-- IMPORT THE CENTRALIZED HELPER
 
 # Use a forward reference for the State class to avoid circular imports.
 if TYPE_CHECKING:
@@ -56,29 +57,21 @@ class ExtractTimelineAudioTool(BaseTool):
     def args_schema(self):
         return ExtractTimelineAudioArgs
 
-    def _hms_to_seconds(self, time_str: str) -> float:
-        """Converts HH:MM:SS.mmm format to total seconds."""
-        parts = time_str.split(':')
-        h, m = int(parts[0]), int(parts[1])
-        s_parts = parts[2].split('.')
-        s = int(s_parts[0])
-        ms = int(s_parts[1].ljust(3, '0')) if len(s_parts) > 1 else 0
-        return h * 3600 + m * 60 + s + ms / 1000.0
+    # REMOVED: The local _hms_to_seconds method is no longer needed.
 
     def execute(self, state: 'State', args: ExtractTimelineAudioArgs, client: 'genai.Client') -> str | types.Content:
         if not state.timeline:
             return "Error: The timeline is empty. Cannot extract audio from an empty timeline."
 
         # --- 1. Determine Time Range & Find Overlapping Audio Clips ---
-        start_sec = self._hms_to_seconds(args.start_time) if args.start_time else 0.0
-        end_sec = self._hms_to_seconds(args.end_time) if args.end_time else state.get_timeline_duration()
+        start_sec = hms_to_seconds(args.start_time) if args.start_time else 0.0
+        end_sec = hms_to_seconds(args.end_time) if args.end_time else state.get_timeline_duration()
 
         if start_sec >= end_sec:
             return "Error: The start_time must be before the end_time."
 
         tasks_to_process = []
         for clip in state.timeline:
-            # --- MODIFIED: The efficient check using the new state model ---
             if clip.track_type != 'audio' or not clip.has_audio:
                 continue
 

@@ -88,7 +88,10 @@ class ExportTimelineTool(BaseTool):
 
 
             # --- COMMON BUILD & WRITE LOGIC ---
-            fps, width, height = self._get_or_infer_sequence_properties(state)
+            # REFACTORED: Call the new method on the state object.
+            fps, width, height = state.get_sequence_properties()
+            
+            print(f"✅ Using sequence properties: {width}x{height} @ {fps:.2f} fps")
             otio_timeline = self._build_otio_timeline(state, fps, width, height, base_path_for_relinking)
 
             file_ext = output_path.suffix.lower()
@@ -103,24 +106,7 @@ class ExportTimelineTool(BaseTool):
 
         return success_message
 
-    def _get_or_infer_sequence_properties(self, state: 'State') -> Tuple[float, int, int]:
-        """
-        Infers sequence properties (resolution, frame rate) from the timeline.
-        It prioritizes video clips for the most accurate data.
-        """
-        if all([state.frame_rate, state.width, state.height]):
-            return (state.frame_rate, state.width, state.height)
-
-        # Infer from the first clip on a video track
-        first_video_clip = next((c for c in state.timeline if c.track_type == 'video'), None)
-        
-        if not first_video_clip:
-            # If no video, maybe there's only audio? Fallback to a default.
-            # This could be improved if audio-only projects are a goal.
-            return (24.0, 1920, 1080)
-        
-        print(f"✅ Inferred sequence properties from '{os.path.basename(first_video_clip.source_path)}': {first_video_clip.source_width}x{first_video_clip.source_height} @ {first_video_clip.source_frame_rate:.2f} fps")
-        return (first_video_clip.source_frame_rate, first_video_clip.source_width, first_video_clip.source_height)
+    # REMOVED: The _get_or_infer_sequence_properties method is now in state.py
 
     def _build_otio_timeline(self, state: 'State', fps: float, width: int, height: int, base_path_for_relinking: Path) -> otio.schema.Timeline:
         """

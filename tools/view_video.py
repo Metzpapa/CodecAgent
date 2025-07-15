@@ -1,4 +1,3 @@
-
 import os
 import ffmpeg
 from typing import Optional, TYPE_CHECKING, Union, List
@@ -11,6 +10,7 @@ from google import genai
 from google.genai import types
 
 from .base import BaseTool
+from utils import hms_to_seconds, probe_media_file # <-- MODIFIED IMPORT
 
 # Use a forward reference for the State class to avoid circular imports.
 if TYPE_CHECKING:
@@ -109,14 +109,7 @@ class ViewVideoTool(BaseTool):
     def args_schema(self):
         return ViewVideoArgs
 
-    def _hms_to_seconds(self, time_str: str) -> float:
-        """Converts HH:MM:SS.mmm format to total seconds."""
-        parts = time_str.split(':')
-        h, m = int(parts[0]), int(parts[1])
-        s_parts = parts[2].split('.')
-        s = int(s_parts[0])
-        ms = int(s_parts[1].ljust(3, '0')) if len(s_parts) > 1 else 0
-        return h * 3600 + m * 60 + s + ms / 1000.0
+    # REMOVED: _hms_to_seconds method is now imported from utils
 
     def execute(self, state: 'State', args: ViewVideoArgs, client: 'genai.Client') -> str | types.Content:
         # --- 1. Validation & Setup ---
@@ -124,27 +117,22 @@ class ViewVideoTool(BaseTool):
         if not os.path.exists(full_path):
             return f"Error: The source file '{args.source_filename}' does not exist in the assets directory."
 
-        try:
-            probe = ffmpeg.probe(full_path)
-            video_stream = next((s for s in probe['streams'] if s['codec_type'] == 'video'), None)
-            if not video_stream:
-                return f"Error: Source file '{args.source_filename}' does not contain a video stream."
-            
-            duration_str = video_stream.get('duration') or probe['format'].get('duration', '0')
-            source_duration = float(duration_str)
+        media_info = probe_media_file(full_path)
+        if media_info.error:
+            return f"Error probing '{args.source_filename}': {media_info.error}"
+        
+        if not media_info.has_video:
+            return f"Error: Source file '{args.source_filename}' does not contain a video stream."
+        
+        if media_info.duration_sec <= 0:
+            return f"Error: Could not determine a valid duration for '{args.source_filename}'."
 
-            fr_str = video_stream.get('r_frame_rate', '0/1')
-            num, den = map(int, fr_str.split('/'))
-            frame_rate = num / den if den > 0 else 24.0
-
-            if source_duration <= 0:
-                return f"Error: Could not determine a valid duration for '{args.source_filename}'."
-        except ffmpeg.Error as e:
-            return f"Error: Failed to probe '{args.source_filename}'. It may be corrupt or not a valid video file. FFmpeg error: {e.stderr.decode()}"
+        source_duration = media_info.duration_sec
+        frame_rate = media_info.frame_rate if media_info.frame_rate > 0 else 24.0
 
         # --- 2. Time & Frame Calculation ---
-        start_sec = self._hms_to_seconds(args.start_time) if args.start_time else 0.0
-        end_sec = self._hms_to_seconds(args.end_time) if args.end_time else source_duration
+        start_sec = hms_to_seconds(args.start_time) if args.start_time else 0.0
+        end_sec = hms_to_seconds(args.end_time) if args.end_time else source_duration
 
         if start_sec >= end_sec:
             return "Error: The start_time must be before the end_time."
@@ -157,6 +145,7 @@ class ViewVideoTool(BaseTool):
         if duration_to_sample <= 0:
             timestamps = [start_sec]
         else:
+            # Subtract one frame's duration to avoid sampling past the end of the stream
             safe_duration = duration_to_sample - (1 / frame_rate) if frame_rate > 0 else duration_to_sample
             segment_duration = safe_duration / max(1, args.num_frames)
             timestamps = [

@@ -1,7 +1,6 @@
 # codec/tools/add_clips.py
 import os
 import math
-import ffmpeg
 from typing import Literal, Optional, TYPE_CHECKING, List, Dict, Any, Tuple
 from pydantic import BaseModel, Field
 from collections import defaultdict
@@ -9,6 +8,7 @@ from collections import defaultdict
 from google import genai
 from .base import BaseTool
 from state import TimelineClip
+from utils import hms_to_seconds, probe_media_file
 
 # Use a forward reference for the State class to avoid circular imports.
 if TYPE_CHECKING:
@@ -107,22 +107,6 @@ class AddClipsTool(BaseTool):
     def args_schema(self):
         return AddClipsArgs
 
-    def _hms_to_seconds(self, time_str: str) -> float:
-        """Converts HH:MM:SS.mmm format to total seconds."""
-        parts = time_str.split(':')
-        h, m = int(parts[0]), int(parts[1])
-        s_parts = parts[2].split('.')
-        s = int(s_parts[0])
-        ms = int(s_parts[1].ljust(3, '0')) if len(s_parts) > 1 else 0
-        return h * 3600 + m * 60 + s + ms / 1000.0
-
-    def _get_or_infer_frame_rate(self, state: 'State') -> float:
-        """Gets sequence frame rate from state or infers it from the first video clip."""
-        if state.frame_rate:
-            return state.frame_rate
-        first_video_clip = next((c for c in state.timeline if c.track_type == 'video'), None)
-        return first_video_clip.source_frame_rate if first_video_clip else 24.0
-
     def _validate_single_clip(
         self,
         clip_def: ClipToAdd,
@@ -148,14 +132,14 @@ class AddClipsTool(BaseTool):
         track_number = int(clip_def.track[1:])
 
         try:
-            # 1d. Probe and Media Type Validation
-            probe = ffmpeg.probe(source_path)
-            video_stream = next((s for s in probe['streams'] if s['codec_type'] == 'video'), None)
-            audio_stream = next((s for s in probe['streams'] if s['codec_type'] == 'audio'), None)
+            # 1d. Probe and Media Type Validation (using centralized utility)
+            media_info = probe_media_file(source_path)
+            if media_info.error:
+                return None, f"Error probing '{clip_def.source_filename}': {media_info.error}"
 
-            if track_type == 'video' and not video_stream:
+            if track_type == 'video' and not media_info.has_video:
                 return None, f"Cannot place '{clip_def.source_filename}' on a video track ('{clip_def.track}') because it contains no video stream."
-            if track_type == 'audio' and not audio_stream:
+            if track_type == 'audio' and not media_info.has_audio:
                 return None, f"Cannot place '{clip_def.source_filename}' on an audio track ('{clip_def.track}') because it contains no audio stream."
 
             # 1e. Metadata Extraction (Image vs. Video/Audio)
@@ -163,23 +147,19 @@ class AddClipsTool(BaseTool):
             if is_image:
                 if track_type != 'video':
                     return None, "Images can only be placed on video tracks."
-                if not math.isclose(self._hms_to_seconds(clip_def.source_in), 0.0):
+                if not math.isclose(hms_to_seconds(clip_def.source_in), 0.0):
                     return None, "For images, 'source_in' must be '00:00:00.000'."
-                duration_sec = self._hms_to_seconds(clip_def.source_out)
+                duration_sec = hms_to_seconds(clip_def.source_out)
                 if duration_sec <= 0:
                     return None, "For images, 'source_out' must be a positive duration."
                 source_in_sec, source_out_sec = 0.0, duration_sec
                 source_total_duration_sec = duration_sec
-                source_fps = self._get_or_infer_frame_rate(state)
-                source_width, source_height = video_stream.get('width'), video_stream.get('height')
+                source_fps = state.get_sequence_properties()[0] # Infer from timeline
+                source_width, source_height = media_info.width, media_info.height
             else: # Video or Audio-only
-                stream = video_stream if track_type == 'video' else audio_stream
-                duration_str = stream.get('duration') or probe['format'].get('duration')
-                if not duration_str:
-                    return None, "Could not determine source duration."
-                source_total_duration_sec = float(duration_str)
-                source_in_sec = self._hms_to_seconds(clip_def.source_in)
-                source_out_sec = self._hms_to_seconds(clip_def.source_out)
+                source_total_duration_sec = media_info.duration_sec
+                source_in_sec = hms_to_seconds(clip_def.source_in)
+                source_out_sec = hms_to_seconds(clip_def.source_out)
 
                 if source_out_sec > source_total_duration_sec and not math.isclose(source_out_sec, source_total_duration_sec, abs_tol=0.01):
                     return None, f"source_out ({source_out_sec:.3f}s) is beyond the source's duration ({source_total_duration_sec:.3f}s)."
@@ -187,15 +167,12 @@ class AddClipsTool(BaseTool):
                     return None, "source_in must be before source_out."
                 duration_sec = source_out_sec - source_in_sec
                 
-                source_width = video_stream.get('width', 0) if video_stream else 0
-                source_height = video_stream.get('height', 0) if video_stream else 0
-                source_fps = 0.0
-                if video_stream and 'r_frame_rate' in video_stream:
-                    num, den = map(int, video_stream['r_frame_rate'].split('/'))
-                    if den > 0: source_fps = num / den
+                source_width = media_info.width
+                source_height = media_info.height
+                source_fps = media_info.frame_rate
 
             # 1f. Timeline Placement Validation
-            timeline_start_sec = self._hms_to_seconds(clip_def.timeline_start)
+            timeline_start_sec = hms_to_seconds(clip_def.timeline_start)
             if clip_def.insertion_behavior == 'append':
                 track_key = (track_type, track_number)
                 if track_key not in temp_track_durations:
@@ -203,7 +180,7 @@ class AddClipsTool(BaseTool):
                 timeline_start_sec = temp_track_durations[track_key]
                 temp_track_durations[track_key] += duration_sec
             elif clip_def.insertion_behavior == 'insert':
-                timeline_fps = self._get_or_infer_frame_rate(state)
+                timeline_fps = state.get_sequence_properties()[0]
                 tolerance = (1.0 / timeline_fps) / 2.0 if timeline_fps > 0 else 0.001
                 clips_on_track = state.get_clips_on_specific_track(track_type, track_number)
                 valid_cut_points = {0.0} | {c.timeline_start_sec + c.duration_sec for c in clips_on_track}
@@ -217,7 +194,7 @@ class AddClipsTool(BaseTool):
                 source_out_sec=source_out_sec, source_total_duration_sec=source_total_duration_sec,
                 duration_sec=duration_sec, track_type=track_type, track_number=track_number,
                 description=clip_def.description, source_frame_rate=source_fps, source_width=source_width,
-                source_height=source_height, has_audio=audio_stream is not None,
+                source_height=source_height, has_audio=media_info.has_audio,
                 timeline_start_sec=timeline_start_sec, insertion_behavior=clip_def.insertion_behavior
             )
             return validated_info, None

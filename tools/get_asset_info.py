@@ -1,11 +1,11 @@
 import os
 from typing import List, TYPE_CHECKING
 
-import ffmpeg
 from pydantic import BaseModel, Field
-
 from google import genai
+
 from tools.base import BaseTool
+from utils import probe_media_file
 
 # Use a forward reference for the State class to avoid circular imports.
 if TYPE_CHECKING:
@@ -40,7 +40,7 @@ class GetAssetInfoTool(BaseTool):
 
     def execute(self, state: 'State', args: GetAssetInfoArgs, client: 'genai.Client') -> str:
         """
-        Probes each requested file using ffmpeg to extract and format its metadata.
+        Probes each requested file using the centralized utility to extract and format its metadata.
         """
         results = []
         for filename in args.filenames:
@@ -50,47 +50,26 @@ class GetAssetInfoTool(BaseTool):
                 results.append(f"File: {filename}\n  - Status: Error - File not found.")
                 continue
 
-            try:
-                probe = ffmpeg.probe(full_path)
-                
-                # Find the primary video stream
-                video_stream = next((s for s in probe['streams'] if s['codec_type'] == 'video'), None)
-                
-                # Find the primary audio stream
-                audio_stream = next((s for s in probe['streams'] if s['codec_type'] == 'audio'), None)
+            media_info = probe_media_file(full_path)
 
-                if not video_stream and not audio_stream:
-                    results.append(f"File: {filename}\n  - Status: Error - Not a valid media file (no video or audio streams).")
-                    continue
+            if media_info.error:
+                results.append(f"File: {filename}\n  - Status: Error - {media_info.error}")
+                continue
 
-                # Format the output string for this file
-                info_lines = [f"File: {filename}", "  - Status: OK"]
-                
-                # Use video stream duration if available, otherwise fall back to format duration
-                duration_str = video_stream.get('duration') if video_stream else probe['format'].get('duration', '0')
-                info_lines.append(f"  - Duration: {float(duration_str):.2f} seconds")
+            # Format the output string for this file using the structured MediaInfo object
+            info_lines = [f"File: {filename}", "  - Status: OK"]
+            info_lines.append(f"  - Duration: {media_info.duration_sec:.2f} seconds")
 
-                if video_stream:
-                    width = video_stream.get('width', 'N/A')
-                    height = video_stream.get('height', 'N/A')
-                    info_lines.append(f"  - Resolution: {width}x{height}")
+            if media_info.has_video:
+                info_lines.append(f"  - Resolution: {media_info.width}x{media_info.height}")
+                info_lines.append(f"  - Frame Rate: {media_info.frame_rate:.2f} fps")
+            
+            if media_info.has_audio:
+                info_lines.append("  - Audio: Yes")
+            else:
+                info_lines.append("  - Audio: No")
 
-                    # Safely parse frame rate (it's often a fraction like '30/1')
-                    fr_str = video_stream.get('r_frame_rate', '0/1')
-                    num, den = map(int, fr_str.split('/'))
-                    frame_rate = num / den if den > 0 else 0
-                    info_lines.append(f"  - Frame Rate: {frame_rate:.2f} fps")
-                
-                if audio_stream:
-                    sample_rate = audio_stream.get('sample_rate', 'N/A')
-                    info_lines.append(f"  - Audio: Yes ({sample_rate} Hz)")
-                else:
-                    info_lines.append("  - Audio: No")
-
-                results.append("\n".join(info_lines))
-
-            except ffmpeg.Error as e:
-                results.append(f"File: {filename}\n  - Status: Error - FFmpeg failed to probe file. It may be corrupt.\n  - FFmpeg Error: {e.stderr.decode('utf-8').strip()}")
+            results.append("\n".join(info_lines))
 
         # Join the results for all files into a single string
         return "\n\n".join(results)

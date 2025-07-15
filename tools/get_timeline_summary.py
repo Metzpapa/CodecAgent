@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field
 from google import genai
 
 from .base import BaseTool
+from utils import hms_to_seconds
 
 # Use a forward reference for the State class to avoid circular imports.
 if TYPE_CHECKING:
@@ -50,34 +51,13 @@ class GetTimelineSummaryTool(BaseTool):
     def args_schema(self):
         return GetTimelineSummaryArgs
 
-    def _hms_to_seconds(self, time_str: str) -> float:
-        """Converts HH:MM:SS.mmm format to total seconds."""
-        parts = time_str.split(':')
-        h, m = int(parts[0]), int(parts[1])
-        s_parts = parts[2].split('.')
-        s = int(s_parts[0])
-        ms = int(s_parts[1].ljust(3, '0')) if len(s_parts) > 1 else 0
-        return h * 3600 + m * 60 + s + ms / 1000.0
-
-    def _get_or_infer_sequence_properties(self, state: 'State') -> Tuple[float, int, int]:
-        """Gets sequence properties from state or infers them from the first video clip."""
-        if all([state.frame_rate, state.width, state.height]):
-            return (state.frame_rate, state.width, state.height)
-        
-        first_video_clip = next((c for c in state.timeline if c.track_type == 'video'), None)
-        
-        if first_video_clip:
-            return (first_video_clip.source_frame_rate, first_video_clip.source_width, first_video_clip.source_height)
-        else:
-            return (24.0, 1920, 1080)
-
     def execute(self, state: 'State', args: GetTimelineSummaryArgs, client: 'genai.Client') -> str:
         if not state.timeline:
             return "Timeline is currently empty."
 
         # --- 1. Parse and Apply Filters ---
-        start_sec = self._hms_to_seconds(args.start_time) if args.start_time else None
-        end_sec = self._hms_to_seconds(args.end_time) if args.end_time else None
+        start_sec = hms_to_seconds(args.start_time) if args.start_time else None
+        end_sec = hms_to_seconds(args.end_time) if args.end_time else None
         
         parsed_track_type = None
         parsed_track_number = None
@@ -107,7 +87,7 @@ class GetTimelineSummaryTool(BaseTool):
         output.append("=" * 40)
 
         total_duration = state.get_timeline_duration()
-        fps, width, height = self._get_or_infer_sequence_properties(state)
+        fps, width, height = state.get_sequence_properties() # Use the new state method
         all_tracks = set((c.track_type, c.track_number) for c in state.timeline)
         num_video_tracks = len({t for t in all_tracks if t[0] == 'video'})
         num_audio_tracks = len({t for t in all_tracks if t[0] == 'audio'})

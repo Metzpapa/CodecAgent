@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field
 from google import genai
 from .base import BaseTool
 from state import TimelineClip
+from utils import hms_to_seconds # <-- IMPORT THE CENTRALIZED HELPER
 
 # Use a forward reference for the State class to avoid circular imports.
 if TYPE_CHECKING:
@@ -49,14 +50,7 @@ class SplitClipTool(BaseTool):
     def args_schema(self):
         return SplitClipArgs
 
-    def _hms_to_seconds(self, time_str: str) -> float:
-        """Converts HH:MM:SS.mmm format to total seconds."""
-        parts = time_str.split(':')
-        h, m = int(parts[0]), int(parts[1])
-        s_parts = parts[2].split('.')
-        s = int(s_parts[0])
-        ms = int(s_parts[1].ljust(3, '0')) if len(s_parts) > 1 else 0
-        return h * 3600 + m * 60 + s + ms / 1000.0
+    # REMOVED: The local _hms_to_seconds method is no longer needed.
 
     def execute(self, state: 'State', args: SplitClipArgs, client: 'genai.Client') -> str:
         # --- 1. Find the target clip and convert time ---
@@ -64,7 +58,8 @@ class SplitClipTool(BaseTool):
         if not original_clip:
             return f"Error: Clip with ID '{args.clip_id}' not found on the timeline."
 
-        split_time_sec = self._hms_to_seconds(args.split_time)
+        # Use the imported helper function directly
+        split_time_sec = hms_to_seconds(args.split_time)
 
         # --- 2. Perform critical validation ---
         clip_start_sec = original_clip.timeline_start_sec
