@@ -88,11 +88,11 @@ class ExportTimelineTool(BaseTool):
 
 
             # --- COMMON BUILD & WRITE LOGIC ---
-            # REFACTORED: Call the new method on the state object.
             fps, width, height = state.get_sequence_properties()
             
             print(f"✅ Using sequence properties: {width}x{height} @ {fps:.2f} fps")
-            otio_timeline = self._build_otio_timeline(state, fps, width, height, base_path_for_relinking)
+            # MODIFIED: Pass the `consolidate` flag down to the build methods
+            otio_timeline = self._build_otio_timeline(state, fps, width, height, base_path_for_relinking, consolidated=args.consolidate)
 
             file_ext = output_path.suffix.lower()
             adapter_name = "otio_json" if file_ext == ".otio" else "fcp_xml" if file_ext == ".xml" else None
@@ -106,12 +106,12 @@ class ExportTimelineTool(BaseTool):
 
         return success_message
 
-    # REMOVED: The _get_or_infer_sequence_properties method is now in state.py
-
-    def _build_otio_timeline(self, state: 'State', fps: float, width: int, height: int, base_path_for_relinking: Path) -> otio.schema.Timeline:
+    def _build_otio_timeline(self, state: 'State', fps: float, width: int, height: int, base_path_for_relinking: Path, consolidated: bool) -> otio.schema.Timeline:
         """
         Builds the OTIO timeline by directly translating the state's track
         and clip structure.
+        
+        MODIFIED: Accepts a `consolidated` flag to pass to the clip creator.
         """
         otio_timeline = otio.schema.Timeline(name="Codec Agent Edit")
         self._inject_sequence_metadata(otio_timeline, fps, width, height)
@@ -138,8 +138,8 @@ class ExportTimelineTool(BaseTool):
                     gap = otio.schema.Gap(source_range=otio.opentime.TimeRange(duration=otio.opentime.from_seconds(gap_duration, rate=fps)))
                     otio_track.append(gap)
                 
-                # Create and append the OTIO clip
-                otio_clip = self._create_otio_clip(codec_clip, fps, base_path_for_relinking)
+                # Create and append the OTIO clip, passing the consolidation flag
+                otio_clip = self._create_otio_clip(codec_clip, fps, base_path_for_relinking, consolidated)
                 otio_track.append(otio_clip)
 
                 last_clip_end_time = codec_clip.timeline_start_sec + codec_clip.duration_sec
@@ -157,18 +157,24 @@ class ExportTimelineTool(BaseTool):
             "samplecharacteristics": { "width": str(width), "height": str(height), "pixelaspectratio": "square", "anamorphic": "FALSE", "fielddominance": "none" }
         }
 
-    def _create_otio_clip(self, codec_clip: TimelineClip, timeline_fps: float, base_path_for_relinking: Path) -> otio.schema.Clip:
-        """Creates a single OTIO clip from a TimelineClip, handling path relinking."""
+    def _create_otio_clip(self, codec_clip: TimelineClip, timeline_fps: float, base_path_for_relinking: Path, consolidated: bool) -> otio.schema.Clip:
+        """
+        Creates a single OTIO clip from a TimelineClip, handling path relinking.
+        
+        MODIFIED: Now correctly generates the `target_url` based on whether the
+        export is consolidated or not, fixing the relinking bug.
+        """
         def _rt(sec: float): return otio.opentime.from_seconds(sec, rate=timeline_fps)
         
-        # Calculate the relative path from the timeline file's future location to the media's location.
-        if "media" in base_path_for_relinking.parts[-2:]: # Heuristic for consolidated package
-             media_path_in_package = base_path_for_relinking / "media" / Path(codec_clip.source_path).name
-             target_url = os.path.relpath(media_path_in_package, start=base_path_for_relinking)
+        if consolidated:
+            # For a consolidated project, the path is always a simple relative path
+            # into the 'media' subfolder. This is the key fix.
+            target_url = (Path("media") / Path(codec_clip.source_path).name).as_posix()
         else:
-             target_url = os.path.relpath(codec_clip.source_path, start=base_path_for_relinking)
-
-        target_url = Path(target_url).as_posix()
+            # For a non-consolidated export, calculate the path relative from the export
+            # location to the original asset location.
+            target_url = os.path.relpath(codec_clip.source_path, start=base_path_for_relinking)
+            target_url = Path(target_url).as_posix()
 
         available_range = otio.opentime.TimeRange(start_time=_rt(0), duration=_rt(codec_clip.source_total_duration_sec))
         media_ref = otio.schema.ExternalReference(target_url=target_url, available_range=available_range)

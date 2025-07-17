@@ -5,6 +5,7 @@ import inspect
 import pkgutil
 import importlib
 from typing import Dict
+import pprint  # <-- ADD THIS IMPORT
 
 from google import genai
 from google.genai import types
@@ -134,6 +135,10 @@ class Agent:
 
             if not response.candidates:
                 print("🤖 Agent did not return a candidate. This might be due to a safety filter or other issue. Ending turn.")
+                # --- MODIFICATION: Print raw response on no-candidate failure ---
+                print("   --- Raw API Response for Debugging ---")
+                pprint.pprint(response)
+                print("   --------------------------------------")
                 break
 
             candidate = response.candidates[0]
@@ -141,6 +146,13 @@ class Agent:
 
             if finish_reason in BLOCKED_FINISH_REASONS:
                 print(f"❌ Response was blocked by the model. Reason: {finish_reason.name}")
+
+                # --- MODIFICATION: Print the entire raw response on any blocked finish ---
+                print("   --- Raw API Response for Debugging ---")
+                pprint.pprint(response)
+                print("   --------------------------------------")
+                # --- END OF MODIFICATION ---
+
                 if candidate.safety_ratings:
                     for r in candidate.safety_ratings:
                         print(f"   - {r.category.name}: {r.probability.name}")
@@ -213,7 +225,7 @@ class Agent:
                         name=tool_name,
                         response={"error": f"Error executing tool '{tool_name}': {e}"}
                     )])
-                    self.state.history.append(error_content)
+                    self.state.history.append(error_.content)
                 
                 continue
 
