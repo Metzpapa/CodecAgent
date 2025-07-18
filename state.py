@@ -1,13 +1,15 @@
 # codec/state.py
 from typing import List, Optional, Literal, Tuple
 from pydantic import BaseModel, Field
-from google.genai import types
+
+from llm.types import Message, FileObject
 
 
 class TimelineClip(BaseModel):
     """
     Represents a single clip placed on the main timeline, analogous to a clip
     in a non-linear editor (NLE).
+    (This class remains unchanged as it's part of the internal editing logic.)
     """
     clip_id: str
     source_path: str
@@ -48,9 +50,9 @@ class State:
 
     def __init__(self, assets_directory: str):
         self.assets_directory: str = assets_directory
-        self.history: List[types.Content] = []
+        self.history: List[Message] = []
         self.timeline: List[TimelineClip] = []
-        self.uploaded_files: List[types.File] = []
+        self.uploaded_files: List[FileObject] = []
         self.frame_rate: Optional[float] = None
         self.width: Optional[int] = None
         self.height: Optional[int] = None
@@ -65,6 +67,7 @@ class State:
         self.timeline.sort(key=lambda clip: (clip.track_type, clip.track_number, clip.timeline_start_sec))
 
     # --- Public Timeline Management API ---
+    # (No changes needed in the methods below this line)
 
     def add_clip(self, clip: TimelineClip):
         """
