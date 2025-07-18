@@ -2,7 +2,6 @@ import os
 from typing import List, TYPE_CHECKING
 
 from pydantic import BaseModel, Field
-from google import genai
 
 from tools.base import BaseTool
 from utils import probe_media_file
@@ -10,6 +9,7 @@ from utils import probe_media_file
 # Use a forward reference for the State class to avoid circular imports.
 if TYPE_CHECKING:
     from state import State
+    from llm.base import LLMConnector
 
 
 class GetAssetInfoArgs(BaseModel):
@@ -38,7 +38,7 @@ class GetAssetInfoTool(BaseTool):
     def args_schema(self) -> type[BaseModel]:
         return GetAssetInfoArgs
 
-    def execute(self, state: 'State', args: GetAssetInfoArgs, client: 'genai.Client') -> str:
+    def execute(self, state: 'State', args: GetAssetInfoArgs, connector: 'LLMConnector') -> str:
         """
         Probes each requested file using the centralized utility to extract and format its metadata.
         """

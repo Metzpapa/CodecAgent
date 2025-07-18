@@ -1,7 +1,7 @@
 # codec/tools/base.py
 
 from abc import ABC, abstractmethod
-from typing import Type, TYPE_CHECKING
+from typing import Type, TYPE_CHECKING, Union
 
 from pydantic import BaseModel
 
@@ -54,7 +54,7 @@ class BaseTool(ABC):
         pass
 
     @abstractmethod
-    def execute(self, state: 'State', args: BaseModel, connector: 'LLMConnector') -> str | 'Message':
+    def execute(self, state: 'State', args: BaseModel, connector: 'LLMConnector') -> Union[str, 'Message']:
         """
         Executes the tool's logic.
 

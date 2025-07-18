@@ -8,17 +8,17 @@ from pathlib import Path
 
 import ffmpeg
 from pydantic import BaseModel, Field
-from google import genai
-from google.genai import types
 
 from .base import BaseTool
 from state import TimelineClip
 from .extract_audio import _extract_and_upload_audio_segment # REUSING THE HELPER
 from utils import hms_to_seconds # <-- IMPORT THE CENTRALIZED HELPER
+from llm.types import Message, ContentPart, FileObject
 
 # Use a forward reference for the State class to avoid circular imports.
 if TYPE_CHECKING:
     from state import State
+    from llm.base import LLMConnector
 
 
 class ExtractTimelineAudioArgs(BaseModel):
@@ -59,7 +59,7 @@ class ExtractTimelineAudioTool(BaseTool):
 
     # REMOVED: The local _hms_to_seconds method is no longer needed.
 
-    def execute(self, state: 'State', args: ExtractTimelineAudioArgs, client: 'genai.Client') -> str | types.Content:
+    def execute(self, state: 'State', args: ExtractTimelineAudioArgs, connector: 'LLMConnector') -> str | Message:
         if not state.timeline:
             return "Error: The timeline is empty. Cannot extract audio from an empty timeline."
 
@@ -111,7 +111,7 @@ class ExtractTimelineAudioTool(BaseTool):
                         task['source_start_ts'],
                         task['duration'],
                         f"timeline-audio-{task['clip'].clip_id}",
-                        client,
+                        connector,
                         tmpdir
                     ): task['clip']
                     for task in tasks_to_process
@@ -132,22 +132,20 @@ class ExtractTimelineAudioTool(BaseTool):
                 f"SYSTEM: This is the output of the `extract_timeline_audio` tool. "
                 f"Extracted audio for {len(upload_results)} clips found on audio tracks between {start_sec:.2f}s and {end_sec:.2f}s of the timeline."
             )
-            all_parts = [types.Part.from_text(text=context_text)]
+            all_parts = [ContentPart(type='text', text=context_text)]
             
             for clip, result in upload_results:
                 track_name = f"A{clip.track_number}"
-                if isinstance(result, types.File):
+                if isinstance(result, FileObject):
                     audio_file = result
                     state.uploaded_files.append(audio_file)
-                    all_parts.append(types.Part.from_text(text=f"Audio from clip: '{clip.clip_id}' on track {track_name} (starts on timeline at {clip.timeline_start_sec:.3f}s)"))
-                    all_parts.append(types.Part.from_uri(
-                        file_uri=audio_file.uri,
-                        mime_type='audio/mpeg'
-                    ))
+                    all_parts.append(ContentPart(type='text', text=f"Audio from clip: '{clip.clip_id}' on track {track_name} (starts on timeline at {clip.timeline_start_sec:.3f}s)"))
+                    all_parts.append(ContentPart(type='audio', file=audio_file))
                 else: # It's an error string
                     error_details = result
-                    all_parts.append(types.Part.from_text(
+                    all_parts.append(ContentPart(
+                        type='text',
                         text=f"SYSTEM: Could not process audio for clip '{clip.clip_id}' on track {track_name}. Error: {error_details}"
                     ))
             
-            return types.Content(role="user", parts=all_parts)
+            return Message(role="user", parts=all_parts)

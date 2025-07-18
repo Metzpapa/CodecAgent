@@ -20,11 +20,26 @@ from state import State
 
 
 def check_api_key():
-    """Checks if the Gemini API key is set in the environment and exits if not."""
-    if not os.getenv("GEMINI_API_KEY"):
-        print("❌ Error: GEMINI_API_KEY environment variable not set.")
-        print("Please create a .env file in the root directory and add your key:")
-        print("Example: GEMINI_API_KEY='your-api-key-here'")
+    """
+    Checks if the necessary API key for the configured LLM provider is set.
+    This is now flexible and checks for keys based on the LLM_PROVIDER env var.
+    """
+    # For Milestone 1, we default to "gemini" if the provider isn't specified.
+    provider = os.getenv("LLM_PROVIDER", "gemini").lower()
+
+    if provider == "gemini":
+        if not os.getenv("GEMINI_API_KEY"):
+            print("❌ Error: LLM_PROVIDER is set to 'gemini' but GEMINI_API_KEY is not set.")
+            print("Please add it to your .env file.")
+            sys.exit(1)
+    # This part is for Milestone 2, but structuring it now makes adding OpenAI trivial.
+    elif provider == "openai":
+        if not os.getenv("OPENAI_API_KEY"):
+            print("❌ Error: LLM_PROVIDER is set to 'openai' but OPENAI_API_KEY is not set.")
+            print("Please add it to your .env file.")
+            sys.exit(1)
+    else:
+        print(f"❌ Error: Unsupported LLM_PROVIDER '{provider}'. Please use 'gemini' or 'openai'.")
         sys.exit(1)
 
 
@@ -40,6 +55,7 @@ def get_assets_directory() -> str:
     """
     Gets the assets directory path. It first checks for the CODEC_ASSETS_DIR
     environment variable. If not found or invalid, it falls back to prompting the user.
+    (This function is unchanged.)
     """
     env_dir = os.getenv("CODEC_ASSETS_DIR")
     if env_dir:
@@ -62,8 +78,8 @@ def get_assets_directory() -> str:
 
 def get_initial_prompt() -> str:
     """
-
     Prompts the user for the initial multi-line prompt.
+    (This function is unchanged.)
     """
     print("➡️  Enter your initial editing instructions below.")
     print("   (You can write multiple lines. Press Enter on an empty line to send.)")
@@ -83,21 +99,19 @@ def main():
     """The main entry point and orchestration logic for the application."""
     # --- One-Time Setup ---
     load_dotenv()
-    check_api_key()
+    check_api_key() # This function is now provider-aware
     print_startup_screen()
 
     assets_directory_input = get_assets_directory()
 
-    # Convert to an absolute path immediately to ensure all subsequent
-    # operations and file references are robust for export.
     absolute_assets_directory = os.path.abspath(assets_directory_input)
     print(f"✅ Using absolute path for assets: {absolute_assets_directory}\n")
 
-    # Initialize state and agent once, so history is preserved across turns.
+    # The Agent's __init__ now handles selecting the correct connector.
     session_state = State(assets_directory=absolute_assets_directory)
     video_agent = Agent(state=session_state)
 
-    # --- Main Conversation Loop wrapped in try...finally ---
+    # --- Main Conversation Loop (unchanged) ---
     try:
         prompt = get_initial_prompt()
         session_state.initial_prompt = prompt
@@ -113,18 +127,20 @@ def main():
             prompt = input("\n➡️  You: ").strip()
 
     finally:
-        # --- THIS CLEANUP BLOCK WILL ALWAYS RUN ON EXIT ---
+        # --- MODIFIED: The cleanup block now uses the generic connector ---
         print("\nCleaning up session resources...")
         if session_state.uploaded_files:
             print(f"Deleting {len(session_state.uploaded_files)} uploaded files...")
+            # `f` is now our generic FileObject from llm.types
             for f in session_state.uploaded_files:
                 try:
-                    # Use the agent's client to delete the file by its name
-                    video_agent.client.files.delete(name=f.name)
-                    print(f"  - Deleted {f.display_name} ({f.name})")
+                    # We call the delete_file method on the agent's connector,
+                    # passing the provider-specific ID from our generic FileObject.
+                    video_agent.connector.delete_file(file_id=f.id)
+                    print(f"  - Deleted {f.display_name} ({f.id})")
                 except Exception as e:
                     # Log if a specific file fails to delete, but continue trying others
-                    print(f"  - Failed to delete {f.name}: {e}")
+                    print(f"  - Failed to delete {f.id}: {e}")
         else:
             print("No uploaded files to clean up.")
         

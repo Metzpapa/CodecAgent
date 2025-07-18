@@ -7,15 +7,14 @@ from pathlib import Path
 
 import ffmpeg
 from pydantic import BaseModel, Field
-from google import genai
-from google.genai import types
-
 from .base import BaseTool
 from utils import hms_to_seconds, probe_media_file # <-- MODIFIED IMPORT
+from llm.types import Message, ContentPart, FileObject
 
 # Use a forward reference for the State class to avoid circular imports.
 if TYPE_CHECKING:
     from state import State
+    from llm.base import LLMConnector
 
 
 def _extract_and_upload_audio_segment(
@@ -23,9 +22,9 @@ def _extract_and_upload_audio_segment(
     start_sec: float,
     duration_sec: float,
     display_name: str,
-    client: 'genai.Client',
+    connector: 'LLMConnector',
     tmpdir: str
-) -> Union[types.File, str]:
+) -> Union[FileObject, str]:
     """
     Core reusable logic to extract an audio segment from a media file, save it
     temporarily, and upload it to the Gemini API.
@@ -35,11 +34,11 @@ def _extract_and_upload_audio_segment(
         start_sec: The start time of the segment to extract.
         duration_sec: The duration of the segment to extract.
         display_name: The display name for the uploaded file.
-        client: The genai.Client instance.
+        connector: The LLMConnector instance.
         tmpdir: The temporary directory to store the extracted audio.
 
     Returns:
-        A google.genai.types.File object on success, or an error string on failure.
+        A FileObject on success, or an error string on failure.
     """
     output_path = Path(tmpdir) / f"audio_{os.path.basename(file_path)}_{start_sec:.2f}s.mp3"
     try:
@@ -52,13 +51,13 @@ def _extract_and_upload_audio_segment(
 
         # 2. Upload the extracted audio
         print(f"Uploading audio from '{display_name}' (duration: {duration_sec:.2f}s)...")
-        with open(output_path, "rb") as f:
-            audio_file = client.files.upload(
-                file=f,
-                config={"mimeType": "audio/mpeg", "displayName": display_name}
-            )
-        print(f"Upload complete for '{display_name}'. Name: {audio_file.name}")
-        return audio_file
+        audio_file_obj = connector.upload_file(
+            file_path=str(output_path),
+            display_name=display_name,
+            mime_type="audio/mpeg"
+        )
+        print(f"Upload complete for '{display_name}'. ID: {audio_file_obj.id}")
+        return audio_file_obj
 
     except Exception as e:
         error_msg = f"Failed to extract or upload audio for '{display_name}'. Details: {e}"
@@ -108,7 +107,7 @@ class ExtractAudioTool(BaseTool):
 
     # REMOVED: _hms_to_seconds helper function
 
-    def execute(self, state: 'State', args: ExtractAudioArgs, client: 'genai.Client') -> str | types.Content:
+    def execute(self, state: 'State', args: ExtractAudioArgs, connector: 'LLMConnector') -> str | Message:
         # --- 1. Validation & Setup ---
         full_path = os.path.join(state.assets_directory, args.source_filename)
         if not os.path.exists(full_path):
@@ -145,7 +144,7 @@ class ExtractAudioTool(BaseTool):
         with tempfile.TemporaryDirectory() as tmpdir:
             display_name = f"audio-{args.source_filename}-{start_sec:.2f}s-{end_sec:.2f}s"
             result = _extract_and_upload_audio_segment(
-                full_path, start_sec, duration_to_extract, display_name, client, tmpdir
+                full_path, start_sec, duration_to_extract, display_name, connector, tmpdir
             )
 
             if isinstance(result, str): # It's an error string
@@ -160,15 +159,9 @@ class ExtractAudioTool(BaseTool):
                 f"This is the audio content from {start_sec:.2f}s to {end_sec:.2f}s."
             )
             
-            response_content = types.Content(
-                role="user",
-                parts=[
-                    types.Part.from_text(text=context_text),
-                    types.Part.from_uri(
-                        file_uri=audio_file.uri,
-                        mime_type='audio/mpeg'
-                    )
-                ]
-            )
+            all_parts = [
+                ContentPart(type='text', text=context_text),
+                ContentPart(type='audio', file=audio_file)
+            ]
             
-            return response_content
+            return Message(role="user", parts=all_parts)

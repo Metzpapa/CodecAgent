@@ -5,7 +5,6 @@ from typing import Optional, TYPE_CHECKING, Tuple
 from collections import defaultdict
 
 from pydantic import BaseModel, Field
-from google import genai
 
 from .base import BaseTool
 from utils import hms_to_seconds
@@ -13,6 +12,7 @@ from utils import hms_to_seconds
 # Use a forward reference for the State class to avoid circular imports.
 if TYPE_CHECKING:
     from state import State
+    from llm.base import LLMConnector
 
 
 class GetTimelineSummaryArgs(BaseModel):
@@ -51,7 +51,7 @@ class GetTimelineSummaryTool(BaseTool):
     def args_schema(self):
         return GetTimelineSummaryArgs
 
-    def execute(self, state: 'State', args: GetTimelineSummaryArgs, client: 'genai.Client') -> str:
+    def execute(self, state: 'State', args: GetTimelineSummaryArgs, connector: 'LLMConnector') -> str:
         if not state.timeline:
             return "Timeline is currently empty."
 

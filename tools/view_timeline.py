@@ -9,16 +9,16 @@ from pathlib import Path
 from collections import defaultdict
 
 from pydantic import BaseModel, Field
-from google import genai
-from google.genai import types
 
 from .base import BaseTool
 from state import TimelineClip
 from utils import hms_to_seconds # <-- IMPORT THE CENTRALIZED HELPER
+from llm.types import Message, ContentPart, FileObject
 
 # Use a forward reference for the State class to avoid circular imports.
 if TYPE_CHECKING:
     from state import State
+    from llm.base import LLMConnector
 
 
 class ViewTimelineArgs(BaseModel):
@@ -65,7 +65,7 @@ class ViewTimelineTool(BaseTool):
 
     # REMOVED: The local _hms_to_seconds helper function is no longer needed.
 
-    def execute(self, state: 'State', args: ViewTimelineArgs, client: 'genai.Client') -> str | types.Content:
+    def execute(self, state: 'State', args: ViewTimelineArgs, connector: 'LLMConnector') -> str | Message:
         if not state.timeline:
             return "Error: The timeline is empty. Cannot view an empty timeline."
 
@@ -141,7 +141,7 @@ class ViewTimelineTool(BaseTool):
                         for i, task in enumerate(tasks_sorted_by_frame):
                             if i < len(extracted_files):
                                 display_name = f"timeline-frame-{task['clip'].clip_id}-{task['timeline_ts']:.2f}s"
-                                future = executor.submit(self._upload_file_from_path, extracted_files[i], display_name, client)
+                                future = executor.submit(self._upload_file_from_path, extracted_files[i], display_name, connector)
                                 future_to_ts[future] = task['timeline_ts']
 
                     except Exception as e:
@@ -156,7 +156,8 @@ class ViewTimelineTool(BaseTool):
                         upload_results[ts] = f"Upload failed: {e}"
 
             # --- 5. Assemble Chronological Response ---
-            all_parts = [types.Part.from_text(
+            all_parts = [ContentPart(
+                type='text',
                 text=f"SYSTEM: This is the output of the `view_timeline` tool. "
                      f"Displaying frames sampled between {start_sec:.2f}s and {end_sec:.2f}s of the timeline."
             )]
@@ -166,33 +167,34 @@ class ViewTimelineTool(BaseTool):
                 clip = event.get('clip')
 
                 if not clip:
-                    all_parts.append(types.Part.from_text(text=f"Timeline at {ts:.3f}s: [GAP ON VIDEO TRACKS]"))
+                    all_parts.append(ContentPart(type='text', text=f"Timeline at {ts:.3f}s: [GAP ON VIDEO TRACKS]"))
                     continue
 
                 result = upload_results.get(ts)
                 track_name = f"V{clip.track_number}"
                 
-                if isinstance(result, types.File):
+                if isinstance(result, FileObject):
                     frame_file = result
                     state.uploaded_files.append(frame_file)
-                    all_parts.append(types.Part.from_text(text=f"Timeline at {ts:.3f}s (from clip: '{clip.clip_id}' on track {track_name})"))
-                    all_parts.append(types.Part.from_uri(file_uri=frame_file.uri, mime_type='image/jpeg'))
+                    all_parts.append(ContentPart(type='text', text=f"Timeline at {ts:.3f}s (from clip: '{clip.clip_id}' on track {track_name})"))
+                    all_parts.append(ContentPart(type='image', file=frame_file))
                 else:
                     error_details = result or "Processing failed."
-                    all_parts.append(types.Part.from_text(
+                    all_parts.append(ContentPart(
+                        type='text',
                         text=f"SYSTEM: Could not process frame from clip '{clip.clip_id}' at timeline {ts:.3f}s. Error: {error_details}"
                     ))
             
-            return types.Content(role="user", parts=all_parts)
+            return Message(role="user", parts=all_parts)
 
-    def _upload_file_from_path(self, file_path: Path, display_name: str, client: 'genai.Client') -> Union[types.File, str]:
+    def _upload_file_from_path(self, file_path: Path, display_name: str, connector: 'LLMConnector') -> Union[FileObject, str]:
         """Helper to upload a single file, intended for use in the executor."""
         try:
-            with open(file_path, "rb") as f:
-                uploaded_file = client.files.upload(
-                    file=f,
-                    config={"mimeType": "image/jpeg", "displayName": display_name}
-                )
+            uploaded_file = connector.upload_file(
+                file_path=str(file_path),
+                display_name=display_name,
+                mime_type="image/jpeg"
+            )
             return uploaded_file
         except Exception as e:
             return f"Failed to upload file. Details: {str(e)}"

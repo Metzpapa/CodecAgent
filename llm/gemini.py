@@ -66,12 +66,7 @@ class GeminiConnector(LLMConnector):
         # --- 1. Translate generic inputs to Gemini-specific formats ---
         gemini_history = self._messages_to_gemini_content(history)
         
-        # --- MODIFICATION: Tool conversion logic now lives inside the connector ---
-        # This is the most important change. The connector is now responsible for
-        # converting our generic BaseTool into a format Gemini understands.
         function_declarations = [self._tool_to_function_declaration(tool) for tool in tools]
-        # --- END OF MODIFICATION ---
-
         gemini_tool_set = types.Tool(function_declarations=function_declarations)
 
         config = types.GenerateContentConfig(
@@ -129,9 +124,7 @@ class GeminiConnector(LLMConnector):
         """
         schema_dict = tool.args_schema.model_json_schema()
 
-        # --- NEW HOME for schema processing logic ---
         def _inline_schema_definitions(schema: Dict[str, Any]) -> Dict[str, Any]:
-            # (This is the exact same helper function from the original tools/base.py)
             if not isinstance(schema, dict): return schema
             defs = schema.get('$defs')
             if not defs: return schema
@@ -150,7 +143,6 @@ class GeminiConnector(LLMConnector):
             return _dereference(inlined_schema)
 
         def _sanitize_and_uppercase(d: Dict[str, Any]) -> Dict[str, Any]:
-            # (This is the exact same helper function from the original tools/base.py)
             if not isinstance(d, dict): return d
             ALLOWED_KEYS = {'type', 'description', 'format', 'enum', 'properties', 'required', 'items'}
             sanitized = {key: value for key, value in d.items() if key in ALLOWED_KEYS}
@@ -164,7 +156,6 @@ class GeminiConnector(LLMConnector):
 
         final_schema = _inline_schema_definitions(schema_dict)
         sanitized_schema = _sanitize_and_uppercase(final_schema)
-        # --- END of moved logic ---
 
         return types.FunctionDeclaration(
             name=tool.name,
@@ -179,7 +170,8 @@ class GeminiConnector(LLMConnector):
             gemini_parts = []
             for part in msg.parts:
                 if part.type == 'text':
-                    gemini_parts.append(types.Part.from_text(part.text))
+                    # --- FIX #1: Use the Part constructor directly for text ---
+                    gemini_parts.append(types.Part(text=part.text))
                 elif part.type in ['image', 'audio']:
                     mime_type = 'image/jpeg' if part.type == 'image' else 'audio/mpeg'
                     gemini_parts.append(types.Part.from_uri(
@@ -187,15 +179,13 @@ class GeminiConnector(LLMConnector):
                         mime_type=mime_type
                     ))
                 elif part.type == 'tool_result':
-                    # The original code wrapped results in a dict. We replicate that here.
+                    # --- FIX #2: Ensure the response is a dictionary, matching original logic ---
                     response_dict = {"result": part.text}
                     gemini_parts.append(types.Part.from_function_response(
                         name=part.tool_name,
                         response=response_dict
                     ))
             
-            # The role 'tool' in our generic Message corresponds to the role 'tool' in Gemini's Content.
-            # The role 'model' corresponds to 'model', and 'user' to 'user'. The mapping is direct.
             gemini_content_list.append(types.Content(role=msg.role, parts=gemini_parts))
         return gemini_content_list
 
