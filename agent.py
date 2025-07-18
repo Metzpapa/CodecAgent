@@ -6,10 +6,12 @@ import pkgutil
 import importlib
 from typing import Dict, List
 import pprint
+import sys
 
-# --- MODIFIED: Import our new abstractions ---
+# --- MODIFIED: Import all connectors and the base class ---
 from llm.base import LLMConnector
-from llm.gemini import GeminiConnector # For Milestone 1, we explicitly use the Gemini connector
+from llm.gemini import GeminiConnector
+from llm.openai import OpenAIConnector # <-- ADDED
 from llm.types import Message, ContentPart, ToolCall
 
 # Local imports
@@ -18,7 +20,6 @@ from state import State
 from tools.base import BaseTool
 
 
-# REMOVED: SYSTEM_PROMPT_TEMPLATE is still needed.
 SYSTEM_PROMPT_TEMPLATE = """
 You are codec, a autonomous agent that edits videos.
 Users Request:
@@ -27,9 +28,6 @@ Please keep going until the user's request is completely resolved. If the reques
 First, you should explore the media and get a lay of the land. This means viewing most of the media using the view_video and extract_audio tools. Once you understand what content you are working with, then you can start actually editing. The edit does not need to be perfect. 
 Once you have enough media to make an edit finalize the edit and export it for the user. **You cannot ask any questions to the user. Before at least giving the user a rough draft of the video**
 """
-
-# REMOVED: MULTIMODAL_TOOLS, FINISH, and BLOCKED_FINISH_REASONS are no longer needed here.
-# This logic has been moved into the GeminiConnector, where it belongs.
 
 
 class Agent:
@@ -40,25 +38,35 @@ class Agent:
 
     def __init__(self, state: State):
         """
-        Initializes the agent, loading the appropriate LLM connector and discovering tools.
+        Initializes the agent, loading the appropriate LLM connector based on
+        environment variables, and discovering all available tools.
         """
         self.state = state
 
-        # --- MODIFIED: Instantiate a Connector, not a specific client ---
-        # For Milestone 1, we hardcode the GeminiConnector. In Milestone 2, this
-        # will be decided by an environment variable.
-        gemini_api_key = os.environ.get("GEMINI_API_KEY")
-        gemini_model_name = os.environ.get("GEMINI_MODEL_NAME", "gemini-1.5-pro-latest")
-        self.connector: LLMConnector = GeminiConnector(
-            api_key=gemini_api_key,
-            model_name=gemini_model_name
-        )
+        # --- MODIFIED: Dynamically select the LLM connector ---
+        provider = os.getenv("LLM_PROVIDER", "gemini").lower()
+        self.connector: LLMConnector
+
+        if provider == "gemini":
+            print("🤖 Using Gemini provider.")
+            api_key = os.environ.get("GEMINI_API_KEY")
+            model_name = os.environ.get("GEMINI_MODEL_NAME", "gemini-1.5-pro-latest")
+            self.connector = GeminiConnector(api_key=api_key, model_name=model_name)
+        
+        elif provider == "openai":
+            print("🤖 Using OpenAI provider.")
+            api_key = os.environ.get("OPENAI_API_KEY")
+            model_name = os.environ.get("OPENAI_MODEL_NAME", "gpt-4o") # Default to gpt-4o
+            self.connector = OpenAIConnector(api_key=api_key, model_name=model_name)
+        
+        else:
+            # This check is also in main.py, but it's good practice to have it here.
+            print(f"❌ Error: Unsupported LLM_PROVIDER '{provider}'. Please use 'gemini' or 'openai'.")
+            sys.exit(1)
         # --- END OF MODIFICATION ---
 
         print("Loading tools...")
         self.tools = self._load_tools()
-        # REMOVED: The agent no longer creates the google_tool_set.
-        # This is now the responsibility of the connector.
         print(f"Loaded {len(self.tools)} tools: {', '.join(self.tools.keys())}")
 
     def _load_tools(self) -> Dict[str, BaseTool]:
@@ -79,51 +87,43 @@ class Agent:
     def run(self, prompt: str):
         """
         Starts the agent's execution loop for a single turn of conversation.
+        (This method's logic remains unchanged as it's provider-agnostic.)
         """
         print("\n--- User Prompt ---")
         print(prompt)
         print("-------------------\n")
 
-        # --- MODIFIED: Use our generic Message and ContentPart types ---
         user_message = Message(role="user", parts=[ContentPart(type='text', text=prompt)])
         self.state.history.append(user_message)
-        # --- END OF MODIFICATION ---
 
         if self.state.initial_prompt is None:
             self.state.initial_prompt = prompt
 
         while True:
-            # REMOVED: Token counting was specific to the google client and can be
-            # added to the connector interface later if needed.
-
             final_system_prompt = SYSTEM_PROMPT_TEMPLATE.format(
                 user_request=self.state.initial_prompt
             )
 
-            # --- MODIFIED: Simplified, provider-agnostic API call ---
+            # This is the core provider-agnostic call.
             response = self.connector.generate_content(
                 history=self.state.history,
                 tools=list(self.tools.values()),
                 system_prompt=final_system_prompt,
             )
-            # --- END OF MODIFICATION ---
 
-            # --- MODIFIED: Simplified, generic response validation ---
             if response.is_blocked or not response.message:
                 print(f"❌ Response was blocked or empty. Reason: {response.finish_reason}")
                 print("   --- Raw API Response for Debugging ---")
                 pprint.pprint(response.raw_response)
                 print("   --------------------------------------")
                 # If the prompt itself was blocked, remove it to allow the user to rephrase.
-                if response.finish_reason in ["SAFETY", "BLOCKLIST"]:
+                if response.finish_reason in ["SAFETY", "BLOCKLIST", "API_ERROR"]:
                     self.state.history.pop()
                 break
-            # --- END OF MODIFICATION ---
 
             model_message = response.message
             self.state.history.append(model_message)
 
-            # --- MODIFIED: Process generic Message parts for text and tool calls ---
             text_parts = []
             tool_calls: List[ToolCall] = []
             for part in model_message.parts:
@@ -133,7 +133,6 @@ class Agent:
                     tool_calls.append(part.tool_call)
 
             if text_parts:
-                # The Gemini connector combines thoughts and text. We print it all.
                 full_text = "\n".join(text_parts)
                 print(f"\n🤖 Agent says: {full_text}")
                 print("------------------------")
@@ -141,9 +140,7 @@ class Agent:
             if not tool_calls:
                 print("\n✅ Agent has finished its turn.")
                 break
-            # --- END OF MODIFICATION ---
 
-            # --- MODIFIED: Unified tool execution logic ---
             standard_tool_results: List[ContentPart] = []
             multimodal_tool_executed = False
 
@@ -161,7 +158,6 @@ class Agent:
                     except Exception as e:
                         tool_output = f"Error executing tool '{call.name}': {e}"
 
-                # This is the new, elegant way to handle multimodal vs. standard tools.
                 if isinstance(tool_output, Message):
                     print("🖼️  Agent received a multimodal response. Appending to history and continuing.")
                     self.state.history.append(tool_output)
@@ -176,14 +172,9 @@ class Agent:
                         text=result_text
                     ))
 
-            # If a multimodal tool was called, we immediately loop back to the model
-            # to let it "perceive" the new content in history.
             if multimodal_tool_executed:
                 continue
 
-            # If there were only standard (text-based) tools, we bundle their
-            # results into a single "tool" message and append it to history.
             if standard_tool_results:
                 tool_response_message = Message(role="tool", parts=standard_tool_results)
                 self.state.history.append(tool_response_message)
-            # --- END OF MODIFICATION ---

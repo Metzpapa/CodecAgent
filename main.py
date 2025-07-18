@@ -32,7 +32,7 @@ def check_api_key():
             print("❌ Error: LLM_PROVIDER is set to 'gemini' but GEMINI_API_KEY is not set.")
             print("Please add it to your .env file.")
             sys.exit(1)
-    # This part is for Milestone 2, but structuring it now makes adding OpenAI trivial.
+    # This part is for Milestone 2, and the logic is now active.
     elif provider == "openai":
         if not os.getenv("OPENAI_API_KEY"):
             print("❌ Error: LLM_PROVIDER is set to 'openai' but OPENAI_API_KEY is not set.")
@@ -127,7 +127,7 @@ def main():
             prompt = input("\n➡️  You: ").strip()
 
     finally:
-        # --- MODIFIED: The cleanup block now uses the generic connector ---
+        # The cleanup block now uses the generic connector, which works for both providers.
         print("\nCleaning up session resources...")
         if session_state.uploaded_files:
             print(f"Deleting {len(session_state.uploaded_files)} uploaded files...")
