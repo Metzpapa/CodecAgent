@@ -5,14 +5,14 @@ from typing import Literal, Optional, TYPE_CHECKING, List, Dict, Any, Tuple
 from pydantic import BaseModel, Field
 from collections import defaultdict
 
-from google import genai
+# --- MODIFIED: Update type hints for new abstractions ---
 from .base import BaseTool
 from state import TimelineClip
 from utils import hms_to_seconds, probe_media_file
 
-# Use a forward reference for the State class to avoid circular imports.
 if TYPE_CHECKING:
     from state import State
+    from llm.base import LLMConnector
 
 
 class ClipToAdd(BaseModel):
@@ -202,7 +202,8 @@ class AddClipsTool(BaseTool):
         except Exception as e:
             return None, f"An unexpected error occurred during validation: {e}"
 
-    def execute(self, state: 'State', args: AddClipsArgs, client: 'genai.Client') -> str:
+    # --- MODIFIED: Updated execute signature ---
+    def execute(self, state: 'State', args: AddClipsArgs, connector: 'LLMConnector') -> str:
         # --- PHASE 1: VALIDATION (ALL OR NOTHING) ---
         validated_clips: List[_ValidatedClipInfo] = []
         errors = []

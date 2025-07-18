@@ -1,12 +1,14 @@
+# codec/tools/list_assets.py
+
 import os
+# --- MODIFIED: Update TYPE_CHECKING imports for the new interface ---
 from typing import TYPE_CHECKING
 
-from google import genai
 from tools.base import BaseTool, NoOpArgs
 
-# Use a forward reference for the State class to avoid circular imports.
 if TYPE_CHECKING:
     from state import State
+    from llm.base import LLMConnector
 
 
 class ListAssetsTool(BaseTool):
@@ -23,11 +25,13 @@ class ListAssetsTool(BaseTool):
     @property
     def args_schema(self):
         return NoOpArgs
-
-    def execute(self, state: 'State', args: NoOpArgs, client: 'genai.Client') -> str:
+    def execute(self, state: 'State', args: NoOpArgs, connector: 'LLMConnector') -> str:
         """
         Scans the assets directory and all its subdirectories, returning a
         list of all found files, ignoring hidden system files.
+
+        Note: The `connector` argument is unused in this specific tool, but it is
+        a required part of the BaseTool interface for consistency.
         """
         assets_dir = state.assets_directory
         found_files = []
@@ -36,7 +40,8 @@ class ListAssetsTool(BaseTool):
             return f"Error: The assets directory '{assets_dir}' was not found."
 
         try:
-            # os.walk recursively visits every directory and subdirectory.
+            # The core logic of this tool does not depend on the LLM provider,
+            # so it remains completely unchanged.
             for root, dirs, files in os.walk(assets_dir):
                 for filename in files:
                     # Ignore hidden files (like .DS_Store)

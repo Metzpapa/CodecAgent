@@ -4,11 +4,13 @@ import os
 import inspect
 import pkgutil
 import importlib
-from typing import Dict
-import pprint  # <-- ADD THIS IMPORT
+from typing import Dict, List
+import pprint
 
-from google import genai
-from google.genai import types
+# --- MODIFIED: Import our new abstractions ---
+from llm.base import LLMConnector
+from llm.gemini import GeminiConnector # For Milestone 1, we explicitly use the Gemini connector
+from llm.types import Message, ContentPart, ToolCall
 
 # Local imports
 import tools
@@ -16,6 +18,7 @@ from state import State
 from tools.base import BaseTool
 
 
+# REMOVED: SYSTEM_PROMPT_TEMPLATE is still needed.
 SYSTEM_PROMPT_TEMPLATE = """
 You are codec, a autonomous agent that edits videos.
 Users Request:
@@ -25,51 +28,43 @@ First, you should explore the media and get a lay of the land. This means viewin
 Once you have enough media to make an edit finalize the edit and export it for the user. **You cannot ask any questions to the user. Before at least giving the user a rough draft of the video**
 """
 
-# All tools that return a `types.Content` object for the model to "perceive"
-# should be included here. This enables the agent to review its own work.
-MULTIMODAL_TOOLS = {"view_video", "extract_audio", "view_timeline", "extract_timeline_audio"}
-
-# Alias for brevity, improving readability in the validation block.
-FINISH = types.FinishReason
-
-# Define the set of finish reasons that indicate a blocked or incomplete response.
-# This is a robust way to handle various failure modes from the API.
-BLOCKED_FINISH_REASONS = {
-    FINISH.SAFETY,
-    FINISH.RECITATION,
-    FINISH.BLOCKLIST,
-    FINISH.PROHIBITED_CONTENT,
-    FINISH.SPII,
-    FINISH.IMAGE_SAFETY,
-    FINISH.MALFORMED_FUNCTION_CALL,
-    FINISH.OTHER,
-    FINISH.LANGUAGE,
-}
-# MAX_TOKENS is intentionally *not* included, as we often want to process partial output.
+# REMOVED: MULTIMODAL_TOOLS, FINISH, and BLOCKED_FINISH_REASONS are no longer needed here.
+# This logic has been moved into the GeminiConnector, where it belongs.
 
 
 class Agent:
     """
     The core AI agent responsible for orchestrating LLM calls and tool execution.
+    This class is now provider-agnostic and works with the LLMConnector interface.
     """
 
     def __init__(self, state: State):
         """
-        Initializes the agent, loading the API client and discovering all available tools.
+        Initializes the agent, loading the appropriate LLM connector and discovering tools.
         """
         self.state = state
-        self.client = genai.Client(api_key=os.environ.get("GEMINI_API_KEY"))
-        self.model_name = os.environ.get("GEMINI_MODEL_NAME", "gemini-2.5-pro") #gemini-2.5-flash-lite-preview-06-17
+
+        # --- MODIFIED: Instantiate a Connector, not a specific client ---
+        # For Milestone 1, we hardcode the GeminiConnector. In Milestone 2, this
+        # will be decided by an environment variable.
+        gemini_api_key = os.environ.get("GEMINI_API_KEY")
+        gemini_model_name = os.environ.get("GEMINI_MODEL_NAME", "gemini-1.5-pro-latest")
+        self.connector: LLMConnector = GeminiConnector(
+            api_key=gemini_api_key,
+            model_name=gemini_model_name
+        )
+        # --- END OF MODIFICATION ---
 
         print("Loading tools...")
         self.tools = self._load_tools()
-        function_declarations = [tool.to_google_tool() for tool in self.tools.values()]
-        self.google_tool_set = types.Tool(function_declarations=function_declarations)
+        # REMOVED: The agent no longer creates the google_tool_set.
+        # This is now the responsibility of the connector.
         print(f"Loaded {len(self.tools)} tools: {', '.join(self.tools.keys())}")
 
     def _load_tools(self) -> Dict[str, BaseTool]:
         """
         Dynamically discovers and loads all tool classes from the `tools` directory.
+        (This method's logic remains unchanged.)
         """
         loaded_tools = {}
         for _, module_name, _ in pkgutil.iter_modules(tools.__path__, tools.__name__ + "."):
@@ -89,167 +84,106 @@ class Agent:
         print(prompt)
         print("-------------------\n")
 
-        self.state.history.append(types.Content(role="user", parts=[types.Part.from_text(text=prompt)]))
+        # --- MODIFIED: Use our generic Message and ContentPart types ---
+        user_message = Message(role="user", parts=[ContentPart(type='text', text=prompt)])
+        self.state.history.append(user_message)
+        # --- END OF MODIFICATION ---
 
-        # This check ensures that if the agent is run directly without the main loop's setup,
-        # it still captures the first prompt as the main goal.
         if self.state.initial_prompt is None:
             self.state.initial_prompt = prompt
 
         while True:
-            try:
-                token_count_response = self.client.models.count_tokens(
-                    model=self.model_name,
-                    contents=self.state.history,
-                )
-                print(f"\n📈 Context size before this turn: {token_count_response.total_tokens} tokens")
-            except Exception as e:
-                print(f"⚠️  Could not count tokens: {e}")
+            # REMOVED: Token counting was specific to the google client and can be
+            # added to the connector interface later if needed.
 
             final_system_prompt = SYSTEM_PROMPT_TEMPLATE.format(
                 user_request=self.state.initial_prompt
             )
 
-            config = types.GenerateContentConfig(
-                tools=[self.google_tool_set],
-                system_instruction=final_system_prompt,
-                thinking_config=types.ThinkingConfig(
-                    include_thoughts=True
-                )
-                # ----------------------------------------------------
+            # --- MODIFIED: Simplified, provider-agnostic API call ---
+            response = self.connector.generate_content(
+                history=self.state.history,
+                tools=list(self.tools.values()),
+                system_prompt=final_system_prompt,
             )
+            # --- END OF MODIFICATION ---
 
-            response = self.client.models.generate_content(
-                model=self.model_name,
-                contents=self.state.history,
-                config=config,
-            )
-
-            # --- BULLET-PROOF RESPONSE VALIDATION ---
-
-            if response.prompt_feedback and response.prompt_feedback.block_reason:
-                print(f"❌ The prompt was blocked. Reason: {response.prompt_feedback.block_reason.name}")
-                print("   Please try rephrasing your request.")
-                self.state.history.pop()
-                break
-
-            if not response.candidates:
-                print("🤖 Agent did not return a candidate. This might be due to a safety filter or other issue. Ending turn.")
-                # --- MODIFICATION: Print raw response on no-candidate failure ---
+            # --- MODIFIED: Simplified, generic response validation ---
+            if response.is_blocked or not response.message:
+                print(f"❌ Response was blocked or empty. Reason: {response.finish_reason}")
                 print("   --- Raw API Response for Debugging ---")
-                pprint.pprint(response)
+                pprint.pprint(response.raw_response)
                 print("   --------------------------------------")
+                # If the prompt itself was blocked, remove it to allow the user to rephrase.
+                if response.finish_reason in ["SAFETY", "BLOCKLIST"]:
+                    self.state.history.pop()
                 break
+            # --- END OF MODIFICATION ---
 
-            candidate = response.candidates[0]
-            finish_reason = candidate.finish_reason or FINISH.FINISH_REASON_UNSPECIFIED
+            model_message = response.message
+            self.state.history.append(model_message)
 
-            if finish_reason in BLOCKED_FINISH_REASONS:
-                print(f"❌ Response was blocked by the model. Reason: {finish_reason.name}")
+            # --- MODIFIED: Process generic Message parts for text and tool calls ---
+            text_parts = []
+            tool_calls: List[ToolCall] = []
+            for part in model_message.parts:
+                if part.type == 'text' and part.text:
+                    text_parts.append(part.text)
+                elif part.type == 'tool_call' and part.tool_call:
+                    tool_calls.append(part.tool_call)
 
-                # --- MODIFICATION: Print the entire raw response on any blocked finish ---
-                print("   --- Raw API Response for Debugging ---")
-                pprint.pprint(response)
-                print("   --------------------------------------")
-                # --- END OF MODIFICATION ---
-
-                if candidate.safety_ratings:
-                    for r in candidate.safety_ratings:
-                        print(f"   - {r.category.name}: {r.probability.name}")
-                break
-
-            model_response_content = candidate.content
-
-            if not model_response_content or not model_response_content.parts:
-                print(f"🤖 Agent returned an empty response. Finish Reason: {finish_reason.name}. Ending turn.")
-                break
-            # --- END OF VALIDATION BLOCK ---
-
-            self.state.history.append(model_response_content)
-
-            # --- NEW: PROCESS RESPONSE PARTS FOR THOUGHTS AND TEXT ---
-            # We loop through the parts to handle thought summaries separately.
-            has_thoughts = False
-            has_text_response = False
-            for part in candidate.content.parts:
-                if part.thought:
-                    if not has_thoughts:
-                        print("\n🤔 Agent is thinking...")
-                        has_thoughts = True
-                    # The 'part.text' of a thought is the summary.
-                    print(part.text)
-                elif part.text:
-                    print(f"\n🤖 Agent says: {part.text}")
-                    has_text_response = True
-            
-            if has_thoughts:
+            if text_parts:
+                # The Gemini connector combines thoughts and text. We print it all.
+                full_text = "\n".join(text_parts)
+                print(f"\n🤖 Agent says: {full_text}")
                 print("------------------------")
-            # -----------------------------------------------------------
 
-            # Access function calls from the top-level response object.
-            function_calls = response.function_calls
-
-            if not function_calls:
-                # If there was text or thoughts, the turn might not be "finished"
-                # in the sense of requiring more input, but it's done for now.
-                if has_text_response or has_thoughts:
-                     print("\n✅ Agent has finished its turn.")
+            if not tool_calls:
+                print("\n✅ Agent has finished its turn.")
                 break
+            # --- END OF MODIFICATION ---
 
-            # --- Tool execution logic ---
-            special_call = next((fc for fc in function_calls if fc.name in MULTIMODAL_TOOLS), None)
+            # --- MODIFIED: Unified tool execution logic ---
+            standard_tool_results: List[ContentPart] = []
+            multimodal_tool_executed = False
 
-            if special_call:
-                tool_name = special_call.name
-                tool_args = dict(special_call.args)
-                print(f"🤖 Agent wants to call special tool: {tool_name}({tool_args})")
-                
-                tool_to_execute = self.tools.get(tool_name)
-                try:
-                    validated_args = tool_to_execute.args_schema(**tool_args)
-                    tool_output = tool_to_execute.execute(self.state, validated_args, self.client)
-                    
-                    if isinstance(tool_output, types.Content):
-                        print("🖼️  Agent received a multimodal response. Appending to history and continuing.")
-                        self.state.history.append(tool_output)
-                    else:
-                        print(f"🛠️ Special tool '{tool_name}' returned an error string: {tool_output}")
-                        error_content = types.Content(role="tool", parts=[types.Part.from_function_response(
-                            name=tool_name,
-                            response={"error": str(tool_output)}
-                        )])
-                        self.state.history.append(error_content)
+            for call in tool_calls:
+                print(f"🤖 Agent wants to call tool: {call.name}({call.args})")
+                tool_to_execute = self.tools.get(call.name)
 
-                except Exception as e:
-                    error_content = types.Content(role="tool", parts=[types.Part.from_function_response(
-                        name=tool_name,
-                        response={"error": f"Error executing tool '{tool_name}': {e}"}
-                    )])
-                    self.state.history.append(error_.content)
-                
+                if not tool_to_execute:
+                    result_text = f"Error: Tool '{call.name}' not found."
+                else:
+                    try:
+                        validated_args = tool_to_execute.args_schema(**call.args)
+                        # Pass the connector to the tool's execute method
+                        tool_output = tool_to_execute.execute(self.state, validated_args, self.connector)
+                    except Exception as e:
+                        tool_output = f"Error executing tool '{call.name}': {e}"
+
+                # This is the new, elegant way to handle multimodal vs. standard tools.
+                if isinstance(tool_output, Message):
+                    print("🖼️  Agent received a multimodal response. Appending to history and continuing.")
+                    self.state.history.append(tool_output)
+                    multimodal_tool_executed = True
+                else: # The output is a string
+                    result_text = str(tool_output)
+                    print(f"🛠️ Tool Result:\n{result_text}\n")
+                    standard_tool_results.append(ContentPart(
+                        type='tool_result',
+                        tool_call_id=call.id,
+                        tool_name=call.name,
+                        text=result_text
+                    ))
+
+            # If a multimodal tool was called, we immediately loop back to the model
+            # to let it "perceive" the new content in history.
+            if multimodal_tool_executed:
                 continue
 
-            else:
-                standard_tool_results = []
-                for func_call in function_calls:
-                    tool_name = func_call.name
-                    tool_args = dict(func_call.args)
-                    print(f"🤖 Agent wants to call tool: {tool_name}({tool_args})")
-
-                    tool_to_execute = self.tools.get(tool_name)
-                    if not tool_to_execute:
-                        result = f"Error: Tool '{tool_name}' not found."
-                    else:
-                        try:
-                            validated_args = tool_to_execute.args_schema(**tool_args)
-                            result = tool_to_execute.execute(self.state, validated_args, self.client)
-                        except Exception as e:
-                            result = f"Error executing tool '{tool_name}': {e}"
-                    
-                    print(f"🛠️ Tool Result:\n{result}\n")
-                    standard_tool_results.append(types.Part.from_function_response(
-                        name=tool_name,
-                        response={"result": str(result)},
-                    ))
-                
-                self.state.history.append(types.Content(role="tool", parts=standard_tool_results))
+            # If there were only standard (text-based) tools, we bundle their
+            # results into a single "tool" message and append it to history.
+            if standard_tool_results:
+                tool_response_message = Message(role="tool", parts=standard_tool_results)
+                self.state.history.append(tool_response_message)
+            # --- END OF MODIFICATION ---

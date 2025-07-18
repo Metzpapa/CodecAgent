@@ -19,7 +19,7 @@ if TYPE_CHECKING:
 
 
 # ==============================================================================
-# == CONSTANTS AND HELPERS REPLICATED FROM THE ORIGINAL agent.py ================
+# == CONSTANTS AND HELPERS (MOVED FROM THE ORIGINAL agent.py) ==================
 # ==============================================================================
 
 # Alias for brevity, improving readability.
@@ -65,7 +65,13 @@ class GeminiConnector(LLMConnector):
         """
         # --- 1. Translate generic inputs to Gemini-specific formats ---
         gemini_history = self._messages_to_gemini_content(history)
-        function_declarations = [tool.to_google_tool() for tool in tools]
+        
+        # --- MODIFICATION: Tool conversion logic now lives inside the connector ---
+        # This is the most important change. The connector is now responsible for
+        # converting our generic BaseTool into a format Gemini understands.
+        function_declarations = [self._tool_to_function_declaration(tool) for tool in tools]
+        # --- END OF MODIFICATION ---
+
         gemini_tool_set = types.Tool(function_declarations=function_declarations)
 
         config = types.GenerateContentConfig(
@@ -96,12 +102,11 @@ class GeminiConnector(LLMConnector):
             )
         print(f"Upload complete. Name: {uploaded_file.name}")
 
-        # Translate the provider-specific response to our generic FileObject
         return FileObject(
             id=uploaded_file.name,
             display_name=uploaded_file.display_name,
             uri=uploaded_file.uri,
-            local_path=file_path # Store the local path for potential future use
+            local_path=file_path
         )
 
     def delete_file(self, file_id: str):
@@ -116,6 +121,57 @@ class GeminiConnector(LLMConnector):
     # == PRIVATE TRANSLATION METHODS ===============================================
     # ==============================================================================
 
+    def _tool_to_function_declaration(self, tool: 'BaseTool') -> types.FunctionDeclaration:
+        """
+        Converts a generic BaseTool into a Google GenAI FunctionDeclaration.
+        This method now contains the schema processing logic that was previously
+        in `BaseTool.to_google_tool`.
+        """
+        schema_dict = tool.args_schema.model_json_schema()
+
+        # --- NEW HOME for schema processing logic ---
+        def _inline_schema_definitions(schema: Dict[str, Any]) -> Dict[str, Any]:
+            # (This is the exact same helper function from the original tools/base.py)
+            if not isinstance(schema, dict): return schema
+            defs = schema.get('$defs')
+            if not defs: return schema
+            inlined_schema = {k: v for k, v in schema.items() if k != '$defs'}
+            def _dereference(node: Any) -> Any:
+                if isinstance(node, dict):
+                    if '$ref' in node and isinstance(node['$ref'], str):
+                        def_name = node['$ref'].split('/')[-1]
+                        return _dereference(defs.get(def_name, node))
+                    else:
+                        return {k: _dereference(v) for k, v in node.items()}
+                elif isinstance(node, list):
+                    return [_dereference(item) for item in node]
+                else:
+                    return node
+            return _dereference(inlined_schema)
+
+        def _sanitize_and_uppercase(d: Dict[str, Any]) -> Dict[str, Any]:
+            # (This is the exact same helper function from the original tools/base.py)
+            if not isinstance(d, dict): return d
+            ALLOWED_KEYS = {'type', 'description', 'format', 'enum', 'properties', 'required', 'items'}
+            sanitized = {key: value for key, value in d.items() if key in ALLOWED_KEYS}
+            if 'type' in sanitized and isinstance(sanitized['type'], str):
+                sanitized['type'] = sanitized['type'].upper()
+            if 'properties' in sanitized:
+                sanitized['properties'] = {k: _sanitize_and_uppercase(v) for k, v in sanitized['properties'].items()}
+            if 'items' in sanitized:
+                sanitized['items'] = _sanitize_and_uppercase(sanitized['items'])
+            return sanitized
+
+        final_schema = _inline_schema_definitions(schema_dict)
+        sanitized_schema = _sanitize_and_uppercase(final_schema)
+        # --- END of moved logic ---
+
+        return types.FunctionDeclaration(
+            name=tool.name,
+            description=tool.description,
+            parameters=types.Schema(**sanitized_schema) if sanitized_schema.get("properties") else None,
+        )
+
     def _messages_to_gemini_content(self, messages: List[Message]) -> List[types.Content]:
         """Translates a list of generic Messages into a list of Gemini Content objects."""
         gemini_content_list = []
@@ -125,8 +181,6 @@ class GeminiConnector(LLMConnector):
                 if part.type == 'text':
                     gemini_parts.append(types.Part.from_text(part.text))
                 elif part.type in ['image', 'audio']:
-                    # Determine mime_type for the Part object. This mirrors the original
-                    # tool's hardcoded values.
                     mime_type = 'image/jpeg' if part.type == 'image' else 'audio/mpeg'
                     gemini_parts.append(types.Part.from_uri(
                         file_uri=part.file.uri,
@@ -139,8 +193,9 @@ class GeminiConnector(LLMConnector):
                         name=part.tool_name,
                         response=response_dict
                     ))
-                # 'tool_call' is a model output, so it's not part of the input history in this direction.
-
+            
+            # The role 'tool' in our generic Message corresponds to the role 'tool' in Gemini's Content.
+            # The role 'model' corresponds to 'model', and 'user' to 'user'. The mapping is direct.
             gemini_content_list.append(types.Content(role=msg.role, parts=gemini_parts))
         return gemini_content_list
 
@@ -149,9 +204,7 @@ class GeminiConnector(LLMConnector):
         Parses a raw Gemini API response into our generic LLMResponse,
         including all the original validation and error handling logic.
         """
-        # --- BULLET-PROOF RESPONSE VALIDATION (from agent.py) ---
         if gemini_response.prompt_feedback and gemini_response.prompt_feedback.block_reason:
-            print(f"❌ The prompt was blocked. Reason: {gemini_response.prompt_feedback.block_reason.name}")
             return LLMResponse(
                 message=None,
                 finish_reason=gemini_response.prompt_feedback.block_reason.name,
@@ -160,7 +213,6 @@ class GeminiConnector(LLMConnector):
             )
 
         if not gemini_response.candidates:
-            print("🤖 Agent did not return a candidate. This might be due to a safety filter or other issue.")
             return LLMResponse(
                 message=None,
                 finish_reason="NO_CANDIDATES",
@@ -172,7 +224,6 @@ class GeminiConnector(LLMConnector):
         finish_reason = candidate.finish_reason or FINISH.FINISH_REASON_UNSPECIFIED
 
         if finish_reason in BLOCKED_FINISH_REASONS:
-            print(f"❌ Response was blocked by the model. Reason: {finish_reason.name}")
             return LLMResponse(
                 message=None,
                 finish_reason=finish_reason.name,
@@ -180,34 +231,25 @@ class GeminiConnector(LLMConnector):
                 raw_response=gemini_response
             )
 
-        # --- Translate the valid response into generic types ---
         model_content = candidate.content
         response_parts: List[ContentPart] = []
 
-        # The original agent printed thoughts and text separately. We'll combine them
-        # into text parts, as the 'thought' is just a special kind of text output.
         if model_content and model_content.parts:
             for part in model_content.parts:
                 if part.text:
                     response_parts.append(ContentPart(type='text', text=part.text))
 
-        # Gemini returns tool calls at the top level of the response, not inside the content parts.
         if gemini_response.function_calls:
             for fc in gemini_response.function_calls:
                 tool_call = ToolCall(
-                    # Gemini doesn't provide a call ID, so we generate one for consistency.
                     id=f"call_{uuid.uuid4().hex}",
                     name=fc.name,
                     args=dict(fc.args)
                 )
                 response_parts.append(ContentPart(type='tool_call', tool_call=tool_call))
 
-        # If there are no parts (e.g., only a finish reason), we still need a valid message.
         if not response_parts:
-             # This can happen if the model finishes without saying anything or calling a tool.
-             # We create an empty text part to ensure the message is valid.
              response_parts.append(ContentPart(type='text', text=""))
-
 
         message = Message(role="model", parts=response_parts)
 
