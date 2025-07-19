@@ -12,7 +12,7 @@ from pydantic import BaseModel, Field
 from .base import BaseTool
 from state import TimelineClip
 from .extract_audio import _extract_and_upload_audio_segment # REUSING THE HELPER
-from utils import hms_to_seconds # <-- IMPORT THE CENTRALIZED HELPER
+from utils import hms_to_seconds
 from llm.types import Message, ContentPart, FileObject
 
 # Use a forward reference for the State class to avoid circular imports.
@@ -57,9 +57,7 @@ class ExtractTimelineAudioTool(BaseTool):
     def args_schema(self):
         return ExtractTimelineAudioArgs
 
-    # REMOVED: The local _hms_to_seconds method is no longer needed.
-
-    def execute(self, state: 'State', args: ExtractTimelineAudioArgs, connector: 'LLMConnector') -> str | Message:
+    def execute(self, state: 'State', args: ExtractTimelineAudioArgs, connector: 'LLMConnector') -> Union[str, Tuple[str, List[ContentPart]]]:
         if not state.timeline:
             return "Error: The timeline is empty. Cannot extract audio from an empty timeline."
 
@@ -125,27 +123,28 @@ class ExtractTimelineAudioTool(BaseTool):
                     except Exception as e:
                         upload_results.append((clip, f"Unexpected system error: {e}"))
 
-            # --- 3. Assemble Response ---
+            # --- 3. MODIFIED: Assemble Response as a tuple ---
             upload_results.sort(key=lambda x: x[0].timeline_start_sec) # Sort by timeline start time
             
-            context_text = (
-                f"SYSTEM: This is the output of the `extract_timeline_audio` tool. "
-                f"Extracted audio for {len(upload_results)} clips found on audio tracks between {start_sec:.2f}s and {end_sec:.2f}s of the timeline."
+            confirmation_text = (
+                f"Successfully extracted audio for {len(upload_results)} clips found on audio tracks between {start_sec:.2f}s and {end_sec:.2f}s of the timeline. "
+                "The following content contains the audio information."
             )
-            all_parts = [ContentPart(type='text', text=context_text)]
+            
+            multimodal_parts: List[ContentPart] = []
             
             for clip, result in upload_results:
                 track_name = f"A{clip.track_number}"
                 if isinstance(result, FileObject):
                     audio_file = result
                     state.uploaded_files.append(audio_file)
-                    all_parts.append(ContentPart(type='text', text=f"Audio from clip: '{clip.clip_id}' on track {track_name} (starts on timeline at {clip.timeline_start_sec:.3f}s)"))
-                    all_parts.append(ContentPart(type='audio', file=audio_file))
+                    multimodal_parts.append(ContentPart(type='text', text=f"Audio from clip: '{clip.clip_id}' on track {track_name} (starts on timeline at {clip.timeline_start_sec:.3f}s)"))
+                    multimodal_parts.append(ContentPart(type='audio', file=audio_file))
                 else: # It's an error string
                     error_details = result
-                    all_parts.append(ContentPart(
+                    multimodal_parts.append(ContentPart(
                         type='text',
                         text=f"SYSTEM: Could not process audio for clip '{clip.clip_id}' on track {track_name}. Error: {error_details}"
                     ))
             
-            return Message(role="user", parts=all_parts)
+            return (confirmation_text, multimodal_parts)

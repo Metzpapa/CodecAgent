@@ -12,7 +12,7 @@ from pydantic import BaseModel, Field
 
 from .base import BaseTool
 from state import TimelineClip
-from utils import hms_to_seconds # <-- IMPORT THE CENTRALIZED HELPER
+from utils import hms_to_seconds
 from llm.types import Message, ContentPart, FileObject
 
 # Use a forward reference for the State class to avoid circular imports.
@@ -63,9 +63,7 @@ class ViewTimelineTool(BaseTool):
     def args_schema(self):
         return ViewTimelineArgs
 
-    # REMOVED: The local _hms_to_seconds helper function is no longer needed.
-
-    def execute(self, state: 'State', args: ViewTimelineArgs, connector: 'LLMConnector') -> str | Message:
+    def execute(self, state: 'State', args: ViewTimelineArgs, connector: 'LLMConnector') -> Union[str, Tuple[str, List[ContentPart]]]:
         if not state.timeline:
             return "Error: The timeline is empty. Cannot view an empty timeline."
 
@@ -155,19 +153,20 @@ class ViewTimelineTool(BaseTool):
                     except Exception as e:
                         upload_results[ts] = f"Upload failed: {e}"
 
-            # --- 5. Assemble Chronological Response ---
-            all_parts = [ContentPart(
-                type='text',
-                text=f"SYSTEM: This is the output of the `view_timeline` tool. "
-                     f"Displaying frames sampled between {start_sec:.2f}s and {end_sec:.2f}s of the timeline."
-            )]
+            # --- 5. MODIFIED: Assemble Chronological Response as a tuple ---
+            confirmation_text = (
+                f"Successfully extracted and displayed {len(timeline_timestamps)} frames sampled between {start_sec:.2f}s and {end_sec:.2f}s of the timeline. "
+                "The following content contains the visual information."
+            )
+            
+            multimodal_parts: List[ContentPart] = []
 
             for event in sorted(timeline_events, key=lambda x: x['timeline_ts']):
                 ts = event['timeline_ts']
                 clip = event.get('clip')
 
                 if not clip:
-                    all_parts.append(ContentPart(type='text', text=f"Timeline at {ts:.3f}s: [GAP ON VIDEO TRACKS]"))
+                    multimodal_parts.append(ContentPart(type='text', text=f"Timeline at {ts:.3f}s: [GAP ON VIDEO TRACKS]"))
                     continue
 
                 result = upload_results.get(ts)
@@ -176,16 +175,16 @@ class ViewTimelineTool(BaseTool):
                 if isinstance(result, FileObject):
                     frame_file = result
                     state.uploaded_files.append(frame_file)
-                    all_parts.append(ContentPart(type='text', text=f"Timeline at {ts:.3f}s (from clip: '{clip.clip_id}' on track {track_name})"))
-                    all_parts.append(ContentPart(type='image', file=frame_file))
+                    multimodal_parts.append(ContentPart(type='text', text=f"Timeline at {ts:.3f}s (from clip: '{clip.clip_id}' on track {track_name})"))
+                    multimodal_parts.append(ContentPart(type='image', file=frame_file))
                 else:
                     error_details = result or "Processing failed."
-                    all_parts.append(ContentPart(
+                    multimodal_parts.append(ContentPart(
                         type='text',
                         text=f"SYSTEM: Could not process frame from clip '{clip.clip_id}' at timeline {ts:.3f}s. Error: {error_details}"
                     ))
             
-            return Message(role="user", parts=all_parts)
+            return (confirmation_text, multimodal_parts)
 
     def _upload_file_from_path(self, file_path: Path, display_name: str, connector: 'LLMConnector') -> Union[FileObject, str]:
         """Helper to upload a single file, intended for use in the executor."""

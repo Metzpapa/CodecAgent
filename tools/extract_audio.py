@@ -2,13 +2,13 @@
 
 import os
 import tempfile
-from typing import Optional, TYPE_CHECKING, Union
+from typing import Optional, TYPE_CHECKING, Union, Tuple, List
 from pathlib import Path
 
 import ffmpeg
 from pydantic import BaseModel, Field
 from .base import BaseTool
-from utils import hms_to_seconds, probe_media_file # <-- MODIFIED IMPORT
+from utils import hms_to_seconds, probe_media_file
 from llm.types import Message, ContentPart, FileObject
 
 # Use a forward reference for the State class to avoid circular imports.
@@ -105,9 +105,7 @@ class ExtractAudioTool(BaseTool):
     def args_schema(self):
         return ExtractAudioArgs
 
-    # REMOVED: _hms_to_seconds helper function
-
-    def execute(self, state: 'State', args: ExtractAudioArgs, connector: 'LLMConnector') -> str | Message:
+    def execute(self, state: 'State', args: ExtractAudioArgs, connector: 'LLMConnector') -> Union[str, Tuple[str, List[ContentPart]]]:
         # --- 1. Validation & Setup ---
         full_path = os.path.join(state.assets_directory, args.source_filename)
         if not os.path.exists(full_path):
@@ -153,15 +151,14 @@ class ExtractAudioTool(BaseTool):
             audio_file = result
             state.uploaded_files.append(audio_file)
 
-            # --- 4. Construct the multimodal response ---
-            context_text = (
-                f"SYSTEM: This is the output of the `extract_audio` tool you called for '{args.source_filename}'. "
-                f"This is the audio content from {start_sec:.2f}s to {end_sec:.2f}s."
+            # --- 4. MODIFIED: Construct the multimodal response as a tuple ---
+            confirmation_text = (
+                f"Successfully extracted and uploaded audio from '{args.source_filename}' "
+                f"from {start_sec:.2f}s to {end_sec:.2f}s. The following content contains the audio information."
             )
             
-            all_parts = [
-                ContentPart(type='text', text=context_text),
+            multimodal_parts = [
                 ContentPart(type='audio', file=audio_file)
             ]
             
-            return Message(role="user", parts=all_parts)
+            return (confirmation_text, multimodal_parts)

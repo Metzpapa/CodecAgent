@@ -4,14 +4,14 @@ import os
 import inspect
 import pkgutil
 import importlib
-from typing import Dict, List
+from typing import Dict, List, Tuple
 import pprint
 import sys
 
 # --- MODIFIED: Import all connectors and the base class ---
 from llm.base import LLMConnector
 from llm.gemini import GeminiConnector
-from llm.openai import OpenAIConnector # <-- ADDED
+from llm.openai import OpenAIConnector
 from llm.types import Message, ContentPart, ToolCall
 
 # Local imports
@@ -43,7 +43,7 @@ class Agent:
         """
         self.state = state
 
-        # --- MODIFIED: Dynamically select the LLM connector ---
+        # --- Dynamically select the LLM connector ---
         provider = os.getenv("LLM_PROVIDER", "gemini").lower()
         self.connector: LLMConnector
 
@@ -60,10 +60,8 @@ class Agent:
             self.connector = OpenAIConnector(api_key=api_key, model_name=model_name)
         
         else:
-            # This check is also in main.py, but it's good practice to have it here.
             print(f"❌ Error: Unsupported LLM_PROVIDER '{provider}'. Please use 'gemini' or 'openai'.")
             sys.exit(1)
-        # --- END OF MODIFICATION ---
 
         print("Loading tools...")
         self.tools = self._load_tools()
@@ -72,7 +70,6 @@ class Agent:
     def _load_tools(self) -> Dict[str, BaseTool]:
         """
         Dynamically discovers and loads all tool classes from the `tools` directory.
-        (This method's logic remains unchanged.)
         """
         loaded_tools = {}
         for _, module_name, _ in pkgutil.iter_modules(tools.__path__, tools.__name__ + "."):
@@ -87,7 +84,6 @@ class Agent:
     def run(self, prompt: str):
         """
         Starts the agent's execution loop for a single turn of conversation.
-        (This method's logic remains unchanged as it's provider-agnostic.)
         """
         print("\n--- User Prompt ---")
         print(prompt)
@@ -104,7 +100,6 @@ class Agent:
                 user_request=self.state.initial_prompt
             )
 
-            # This is the core provider-agnostic call.
             response = self.connector.generate_content(
                 history=self.state.history,
                 tools=list(self.tools.values()),
@@ -116,7 +111,6 @@ class Agent:
                 print("   --- Raw API Response for Debugging ---")
                 pprint.pprint(response.raw_response)
                 print("   --------------------------------------")
-                # If the prompt itself was blocked, remove it to allow the user to rephrase.
                 if response.finish_reason in ["SAFETY", "BLOCKLIST", "API_ERROR"]:
                     self.state.history.pop()
                 break
@@ -141,40 +135,61 @@ class Agent:
                 print("\n✅ Agent has finished its turn.")
                 break
 
+            # --- MODIFIED: Unified tool execution logic ---
             standard_tool_results: List[ContentPart] = []
-            multimodal_tool_executed = False
+            multimodal_user_parts: List[ContentPart] = []
 
             for call in tool_calls:
                 print(f"🤖 Agent wants to call tool: {call.name}({call.args})")
                 tool_to_execute = self.tools.get(call.name)
 
+                tool_output = None
                 if not tool_to_execute:
-                    result_text = f"Error: Tool '{call.name}' not found."
+                    tool_output = f"Error: Tool '{call.name}' not found."
                 else:
                     try:
                         validated_args = tool_to_execute.args_schema(**call.args)
-                        # Pass the connector to the tool's execute method
                         tool_output = tool_to_execute.execute(self.state, validated_args, self.connector)
                     except Exception as e:
                         tool_output = f"Error executing tool '{call.name}': {e}"
 
-                if isinstance(tool_output, Message):
-                    print("🖼️  Agent received a multimodal response. Appending to history and continuing.")
-                    self.state.history.append(tool_output)
-                    multimodal_tool_executed = True
-                else: # The output is a string
-                    result_text = str(tool_output)
-                    print(f"🛠️ Tool Result:\n{result_text}\n")
+                # Process the tool's output
+                if isinstance(tool_output, str):
+                    # Standard tool: The output is a simple string.
+                    print(f"🛠️ Tool Result:\n{tool_output}\n")
                     standard_tool_results.append(ContentPart(
                         type='tool_result',
                         tool_call_id=call.id,
                         tool_name=call.name,
-                        text=result_text
+                        text=tool_output
                     ))
+                elif isinstance(tool_output, tuple):
+                    # Multimodal tool: The output is a (confirmation_string, list_of_parts) tuple.
+                    confirmation_string, new_multimodal_parts = tool_output
+                    print(f"🛠️ Tool Result:\n{confirmation_string}\n")
+                    
+                    # 1. Add the text confirmation to the standard tool results.
+                    standard_tool_results.append(ContentPart(
+                        type='tool_result',
+                        tool_call_id=call.id,
+                        tool_name=call.name,
+                        text=confirmation_string
+                    ))
+                    # 2. Collect the multimodal parts to be sent in a separate user message.
+                    multimodal_user_parts.extend(new_multimodal_parts)
 
-            if multimodal_tool_executed:
-                continue
-
+            # After processing all tool calls, append the results to history in the correct order.
+            
+            # 1. Append the 'tool' message with all the text-based results.
+            # This is required by OpenAI to close the loop on tool calls.
             if standard_tool_results:
                 tool_response_message = Message(role="tool", parts=standard_tool_results)
                 self.state.history.append(tool_response_message)
+
+            # 2. If there was any multimodal output, append it as a new 'user' message.
+            # This presents the visual/audio information to the model for the next turn.
+            if multimodal_user_parts:
+                print("🖼️  Presenting new multimodal information to the agent.")
+                multimodal_user_message = Message(role="user", parts=multimodal_user_parts)
+                self.state.history.append(multimodal_user_message)
+            # --- END OF MODIFICATION ---

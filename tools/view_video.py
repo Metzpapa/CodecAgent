@@ -2,7 +2,7 @@
 
 import os
 import ffmpeg
-from typing import Optional, Union, List, TYPE_CHECKING
+from typing import Optional, Union, List, TYPE_CHECKING, Tuple
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import tempfile
 from pathlib import Path
@@ -12,7 +12,6 @@ from pydantic import BaseModel, Field
 # --- MODIFIED: Import our new generic types ---
 from llm.types import Message, ContentPart, FileObject
 
-# REMOVED: `google.genai` and `google.genai.types` are no longer needed here.
 from .base import BaseTool
 from utils import hms_to_seconds, probe_media_file
 
@@ -26,9 +25,9 @@ def _extract_and_upload_frame(
     file_path: Union[str, Path],
     timestamp_sec: float,
     display_name: str,
-    connector: 'LLMConnector', # MODIFIED: Takes a generic connector
+    connector: 'LLMConnector',
     tmpdir: str
-) -> Union[FileObject, str]: # MODIFIED: Returns a generic FileObject
+) -> Union[FileObject, str]:
     """
     Core reusable logic to extract a single frame from a video file, save it
     temporarily, and upload it using the provided LLM connector.
@@ -44,13 +43,11 @@ def _extract_and_upload_frame(
 
         # 2. Upload the extracted frame using the connector
         print(f"Uploading frame from '{display_name}' at {timestamp_sec:.3f}s...")
-        # --- MODIFIED: Use the connector's upload_file method ---
         uploaded_file_obj = connector.upload_file(
             file_path=str(output_path),
             mime_type="image/jpeg",
             display_name=display_name
         )
-        # --- END OF MODIFICATION ---
         print(f"Upload complete for '{display_name}'. ID: {uploaded_file_obj.id}")
         return uploaded_file_obj
 
@@ -107,7 +104,7 @@ class ViewVideoTool(BaseTool):
         return ViewVideoArgs
 
     # --- MODIFIED: The execute method signature and return type are updated ---
-    def execute(self, state: 'State', args: ViewVideoArgs, connector: 'LLMConnector') -> str | Message:
+    def execute(self, state: 'State', args: ViewVideoArgs, connector: 'LLMConnector') -> Union[str, Tuple[str, List[ContentPart]]]:
         # --- 1. Validation & Setup (No changes needed here) ---
         full_path = os.path.join(state.assets_directory, args.source_filename)
         if not os.path.exists(full_path):
@@ -160,7 +157,7 @@ class ViewVideoTool(BaseTool):
                         full_path,
                         ts,
                         f"frame-{args.source_filename}-{ts:.2f}s",
-                        connector, # MODIFIED: Pass the connector
+                        connector,
                         tmpdir
                     ): ts
                     for ts in timestamps
@@ -174,32 +171,30 @@ class ViewVideoTool(BaseTool):
                     except Exception as e:
                         upload_results.append((ts, f"An unexpected system error during upload: {e}"))
 
-            # --- 4. Assemble Response using generic Message and ContentPart ---
+            # --- 4. MODIFIED: Assemble response as a tuple ---
             upload_results.sort(key=lambda x: x[0])
 
-            context_text = (
-                f"SYSTEM: This is the output of the `view_video` tool you called for '{args.source_filename}'. "
-                f"Displaying {len(upload_results)} frames sampled between {start_sec:.2f}s and {end_sec:.2f}s. "
-                "Each image is a frame referenced by the timestamp noted in the accompanying text."
+            confirmation_text = (
+                f"Successfully extracted and uploaded {len(upload_results)} frames from '{args.source_filename}' "
+                f"between {start_sec:.2f}s and {end_sec:.2f}s. The following content contains the visual information."
             )
-            all_parts = [ContentPart(type='text', text=context_text)]
-
+            
+            multimodal_parts: List[ContentPart] = []
             for ts, result in upload_results:
                 if isinstance(result, FileObject):
                     frame_file_obj = result
                     state.uploaded_files.append(frame_file_obj)
-                    all_parts.append(ContentPart(type='text', text=f"Frame at: {ts:.3f}s"))
-                    # Create an 'image' part containing the generic FileObject
-                    all_parts.append(ContentPart(
+                    multimodal_parts.append(ContentPart(type='text', text=f"Frame at: {ts:.3f}s"))
+                    multimodal_parts.append(ContentPart(
                         type='image',
                         file=frame_file_obj
                     ))
                 else:
                     error_details = result
-                    all_parts.append(ContentPart(
+                    multimodal_parts.append(ContentPart(
                         type='text',
                         text=f"SYSTEM: Could not process frame at {ts:.3f}s. Error: {error_details}"
                     ))
 
-            # Return a generic Message object. The GeminiConnector will know how to translate this.
-            return Message(role="user", parts=all_parts)
+            # Return a tuple: (confirmation_string, list_of_multimodal_parts)
+            return (confirmation_text, multimodal_parts)

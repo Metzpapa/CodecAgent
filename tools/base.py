@@ -1,29 +1,21 @@
 # codec/tools/base.py
 
 from abc import ABC, abstractmethod
-from typing import Type, TYPE_CHECKING, Union
+from typing import Type, TYPE_CHECKING, Union, Tuple, List
 
 from pydantic import BaseModel
 
-# --- MODIFIED: Use forward references to our new generic types ---
-# These imports will only be processed by type checkers, not at runtime,
-# preventing circular import errors.
+# --- MODIFIED: Update forward references for the new return type ---
 if TYPE_CHECKING:
     from state import State
     from llm.base import LLMConnector
-    from llm.types import Message
+    from llm.types import ContentPart
 
 
 # This class is a simple data structure and remains unchanged.
 class NoOpArgs(BaseModel):
     """A default Pydantic model for tools that don't require any arguments."""
     pass
-
-
-# REMOVED: The `_inline_schema_definitions` helper function has been removed.
-# This logic is specific to preparing a schema for the Google GenAI API and
-# will be moved into the `GeminiConnector` where it is actually needed. It does
-# not belong in the generic `BaseTool` class.
 
 
 class BaseTool(ABC):
@@ -54,7 +46,7 @@ class BaseTool(ABC):
         pass
 
     @abstractmethod
-    def execute(self, state: 'State', args: BaseModel, connector: 'LLMConnector') -> Union[str, 'Message']:
+    def execute(self, state: 'State', args: BaseModel, connector: 'LLMConnector') -> Union[str, Tuple[str, List['ContentPart']]]:
         """
         Executes the tool's logic.
 
@@ -65,14 +57,12 @@ class BaseTool(ABC):
                        operations like file uploads.
 
         Returns:
-            - A string for simple, text-based tool results.
-            - A generic `Message` object for complex, multimodal results (e.g., from
-              viewing a video or hearing audio), which will be added to the chat history.
+            - A `str` for simple, text-based tool results.
+            - A `Tuple[str, List[ContentPart]]` for complex, multimodal results.
+              The first element of the tuple is a simple text confirmation string
+              that will be placed in the 'tool' role message. The second element
+              is a list of the actual multimodal `ContentPart`s (images, audio)
+              that will be placed in a subsequent 'user' role message for the
+              model to perceive.
         """
         pass
-
-    # REMOVED: The `to_google_tool` method has been removed.
-    # Each LLMConnector is now responsible for converting this BaseTool's
-    # `args_schema` into the format required by its specific API. This is a
-    # key part of the abstraction, ensuring that tools do not need to be
-    # aware of the provider's implementation details.
