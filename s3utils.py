@@ -1,4 +1,4 @@
-# codec/s3_utils.py
+# codec/s3utils.py
 import os
 import boto3
 from botocore.client import Config
@@ -10,15 +10,17 @@ class S3Uploader:
     A utility class to handle file uploads and deletions for an S3-compatible
     object storage service, such as DigitalOcean Spaces.
     """
-    def __init__(self, endpoint_url: str, access_key: str, secret_key: str, bucket_name: str):
+    def __init__(self, endpoint_url: str, access_key: str, secret_key: str, bucket_name: str, public_url_base: str):
         """
         Initializes the S3 client.
 
         Args:
-            endpoint_url: The endpoint URL of the S3 service (e.g., 'https://nyc3.digitaloceanspaces.com').
+            endpoint_url: The endpoint URL for the S3 SDK (e.g., 'https://sfo3.digitaloceanspaces.com').
             access_key: The access key ID for the service.
             secret_key: The secret access key for the service.
             bucket_name: The name of the bucket (or space) to interact with.
+            public_url_base: The full public base URL for accessing files, typically the CDN endpoint
+                             (e.g., 'https://my-bucket.sfo3.cdn.digitaloceanspaces.com').
         """
         self.bucket_name = bucket_name
         self.client = boto3.client(
@@ -28,10 +30,9 @@ class S3Uploader:
             aws_secret_access_key=secret_key,
             config=Config(s3={'addressing_style': 'virtual'})
         )
-        # Construct the base part of the public URL for files.
-        # For DO Spaces, this transforms 'https://nyc3.digitaloceanspaces.com'
-        # into 'https://your-bucket-name.nyc3.digitaloceanspaces.com'
-        self.public_url_base = f"{endpoint_url.replace('digitaloceanspaces.com', f'{bucket_name}.digitaloceanspaces.com')}"
+        # Use the explicit public URL base provided from the configuration.
+        # This is the correct, public-facing URL for services like OpenAI to access.
+        self.public_url_base = public_url_base
 
     def upload(self, file_path: str, object_name: str) -> str:
         """
@@ -49,15 +50,16 @@ class S3Uploader:
         """
         try:
             # The 'ACL': 'public-read' argument is crucial for making the file
-            # accessible via its public URL, which OpenAI's model needs.
+            # accessible via its public URL, which is required by the OpenAI model.
             self.client.upload_file(
                 file_path,
                 self.bucket_name,
                 object_name,
                 ExtraArgs={'ACL': 'public-read'}
             )
+            # Construct the final URL using the correct public base.
             public_url = f"{self.public_url_base}/{object_name}"
-            print(f"Successfully uploaded {Path(file_path).name} to S3 as {object_name}")
+            print(f"Successfully uploaded {Path(file_path).name} to S3. URL: {public_url}")
             return public_url
         except ClientError as e:
             print(f"Error uploading to S3: {e}")

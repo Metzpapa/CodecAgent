@@ -38,7 +38,7 @@ def check_api_key():
             sys.exit(1)
         
         # If any S3 var is set, assume user intends to use it and check all.
-        s3_keys = ["S3_ENDPOINT_URL", "S3_ACCESS_KEY_ID", "S3_SECRET_ACCESS_KEY", "S3_BUCKET_NAME"]
+        s3_keys = ["S3_ENDPOINT_URL", "S3_ACCESS_KEY_ID", "S3_SECRET_ACCESS_KEY", "S3_BUCKET_NAME", "S3_PUBLIC_URL_BASE"]
         if any(os.getenv(k) for k in s3_keys):
             print("S3 environment variables detected. Validating...")
             missing_keys = []
@@ -109,7 +109,7 @@ def main():
     """The main entry point and orchestration logic for the application."""
     # --- One-Time Setup ---
     load_dotenv()
-    check_api_key() # This function is now provider-aware
+    check_api_key() # This function is now provider-aware and S3-aware
     print_startup_screen()
 
     assets_directory_input = get_assets_directory()

@@ -14,7 +14,7 @@ from openai.types.chat import ChatCompletion
 # --- Local, provider-agnostic imports ---
 from .base import LLMConnector
 from .types import Message, LLMResponse, FileObject, ContentPart, ToolCall
-from s3utils import S3Uploader # <-- IMPORT THE NEW UTILITY
+from s3utils import S3Uploader # <-- IMPORT THE S3 UTILITY
 
 # --- Forward reference for type hinting ---
 from typing import TYPE_CHECKING
@@ -36,13 +36,16 @@ class OpenAIConnector(LLMConnector):
         """Initializes the OpenAI client and the S3 uploader if configured."""
         # Initialize S3 Uploader if environment variables are set
         self.s3_uploader = None
-        if os.getenv("S3_ENDPOINT_URL"):
+        # Check for all required S3 variables, including the new public URL base
+        if os.getenv("S3_ENDPOINT_URL") and os.getenv("S3_PUBLIC_URL_BASE"):
             print("🤖 S3 Uploader configured for OpenAI.")
             self.s3_uploader = S3Uploader(
                 endpoint_url=os.environ["S3_ENDPOINT_URL"],
                 access_key=os.environ["S3_ACCESS_KEY_ID"],
                 secret_key=os.environ["S3_SECRET_ACCESS_KEY"],
                 bucket_name=os.environ["S3_BUCKET_NAME"],
+                # Pass the new, explicit public URL base to the uploader
+                public_url_base=os.environ["S3_PUBLIC_URL_BASE"]
             )
         else:
             # This maintains the old base64 behavior if S3 is not configured
@@ -102,7 +105,7 @@ class OpenAIConnector(LLMConnector):
         If S3 is configured, it uploads to a public bucket and returns the URL.
         Otherwise, it falls back to base64 encoding.
         """
-        # --- NEW S3 LOGIC ---
+        # --- S3 LOGIC ---
         if self.s3_uploader:
             file_extension = Path(file_path).suffix
             # Create a unique name to avoid collisions in the bucket
@@ -118,7 +121,7 @@ class OpenAIConnector(LLMConnector):
                 local_path=file_path
             )
 
-        # --- FALLBACK BASE64 LOGIC (EXISTING CODE) ---
+        # --- FALLBACK BASE64 LOGIC ---
         print(f"Encoding '{display_name}' for OpenAI (S3 not configured)...")
         try:
             with open(file_path, "rb") as f:
@@ -142,7 +145,7 @@ class OpenAIConnector(LLMConnector):
         Deletes a file. If S3 is used, it deletes the object from the bucket.
         Otherwise, it's a no-op for base64.
         """
-        # --- NEW S3 LOGIC ---
+        # --- S3 LOGIC ---
         if self.s3_uploader:
             # The file_id is the S3 object_name.
             # We check for a prefix to ensure we only try to delete S3 objects,
@@ -152,7 +155,7 @@ class OpenAIConnector(LLMConnector):
             else:
                  print(f"  - Skipping non-S3 file deletion: '{file_id[:50]}...'")
         else:
-            # --- FALLBACK NO-OP (EXISTING CODE) ---
+            # --- FALLBACK NO-OP ---
             print(f"  - No remote deletion needed for base64 file '{file_id[:50]}...'")
         pass
 
@@ -162,10 +165,7 @@ class OpenAIConnector(LLMConnector):
 
     def _tool_to_openai_tool(self, tool: 'BaseTool') -> Dict[str, Any]:
         """Converts a generic BaseTool into the OpenAI function tool format."""
-        # OpenAI's tool format is very close to standard JSON Schema.
-        # We can directly use the Pydantic model's schema.
         schema = tool.args_schema.model_json_schema()
-        # Pydantic 2.x may include a 'title' in the schema, which OpenAI doesn't use.
         schema.pop('title', None)
 
         return {
@@ -183,7 +183,6 @@ class OpenAIConnector(LLMConnector):
 
         for msg in messages:
             if msg.role == 'model':
-                # Model messages can contain text content and/or tool calls.
                 model_msg = {"role": "assistant", "content": None}
                 tool_calls = []
                 text_content = []
@@ -205,12 +204,10 @@ class OpenAIConnector(LLMConnector):
                 if tool_calls:
                     model_msg["tool_calls"] = tool_calls
                 
-                # Only add the message if it has content or tool calls
                 if model_msg["content"] or model_msg.get("tool_calls"):
                     openai_messages.append(model_msg)
 
             elif msg.role == 'user':
-                # User messages can be simple text or multimodal (text + image/audio).
                 content_parts = []
                 for part in msg.parts:
                     if part.type == 'text':
@@ -222,12 +219,10 @@ class OpenAIConnector(LLMConnector):
                             "type": "image_url",
                             "image_url": {"url": part.file.uri}
                         })
-                    # Note: Audio would be handled similarly if needed.
                 
                 openai_messages.append({"role": "user", "content": content_parts})
 
             elif msg.role == 'tool':
-                # Tool messages are responses from our tools back to the model.
                 for part in msg.parts:
                     if part.type == 'tool_result':
                         openai_messages.append({
@@ -246,17 +241,14 @@ class OpenAIConnector(LLMConnector):
 
         response_parts: List[ContentPart] = []
 
-        # 1. Check for text content
         if response_message.content:
             response_parts.append(ContentPart(type='text', text=response_message.content))
 
-        # 2. Check for tool calls
         if response_message.tool_calls:
             for tc in response_message.tool_calls:
                 try:
                     args = json.loads(tc.function.arguments)
                 except json.JSONDecodeError:
-                    # Handle cases where the model generates invalid JSON for arguments
                     args = {"error": "invalid JSON arguments", "raw": tc.function.arguments}
 
                 tool_call = ToolCall(
@@ -266,7 +258,6 @@ class OpenAIConnector(LLMConnector):
                 )
                 response_parts.append(ContentPart(type='tool_call', tool_call=tool_call))
 
-        # Ensure there's always at least one part, even if empty.
         if not response_parts:
             response_parts.append(ContentPart(type='text', text=""))
 
@@ -275,6 +266,6 @@ class OpenAIConnector(LLMConnector):
         return LLMResponse(
             message=message,
             finish_reason=finish_reason,
-            is_blocked=False, # OpenAI uses API errors for blocking, not finish_reason
+            is_blocked=False,
             raw_response=openai_response
         )
