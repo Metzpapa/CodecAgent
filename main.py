@@ -22,9 +22,8 @@ from state import State
 def check_api_key():
     """
     Checks if the necessary API key for the configured LLM provider is set.
-    This is now flexible and checks for keys based on the LLM_PROVIDER env var.
+    Also validates S3 configuration if OpenAI is the provider.
     """
-    # For Milestone 1, we default to "gemini" if the provider isn't specified.
     provider = os.getenv("LLM_PROVIDER", "gemini").lower()
 
     if provider == "gemini":
@@ -32,12 +31,25 @@ def check_api_key():
             print("❌ Error: LLM_PROVIDER is set to 'gemini' but GEMINI_API_KEY is not set.")
             print("Please add it to your .env file.")
             sys.exit(1)
-    # This part is for Milestone 2, and the logic is now active.
     elif provider == "openai":
         if not os.getenv("OPENAI_API_KEY"):
             print("❌ Error: LLM_PROVIDER is set to 'openai' but OPENAI_API_KEY is not set.")
             print("Please add it to your .env file.")
             sys.exit(1)
+        
+        # If any S3 var is set, assume user intends to use it and check all.
+        s3_keys = ["S3_ENDPOINT_URL", "S3_ACCESS_KEY_ID", "S3_SECRET_ACCESS_KEY", "S3_BUCKET_NAME"]
+        if any(os.getenv(k) for k in s3_keys):
+            print("S3 environment variables detected. Validating...")
+            missing_keys = []
+            for key in s3_keys:
+                if not os.getenv(key):
+                    missing_keys.append(key)
+            if missing_keys:
+                print(f"❌ Error: LLM_PROVIDER is 'openai' and S3 is partially configured. Missing: {', '.join(missing_keys)}")
+                print("Please add all required S3 variables to your .env file or remove them to use base64 fallback.")
+                sys.exit(1)
+
     else:
         print(f"❌ Error: Unsupported LLM_PROVIDER '{provider}'. Please use 'gemini' or 'openai'.")
         sys.exit(1)
@@ -55,7 +67,6 @@ def get_assets_directory() -> str:
     """
     Gets the assets directory path. It first checks for the CODEC_ASSETS_DIR
     environment variable. If not found or invalid, it falls back to prompting the user.
-    (This function is unchanged.)
     """
     env_dir = os.getenv("CODEC_ASSETS_DIR")
     if env_dir:
@@ -79,7 +90,6 @@ def get_assets_directory() -> str:
 def get_initial_prompt() -> str:
     """
     Prompts the user for the initial multi-line prompt.
-    (This function is unchanged.)
     """
     print("➡️  Enter your initial editing instructions below.")
     print("   (You can write multiple lines. Press Enter on an empty line to send.)")
@@ -111,7 +121,7 @@ def main():
     session_state = State(assets_directory=absolute_assets_directory)
     video_agent = Agent(state=session_state)
 
-    # --- Main Conversation Loop (unchanged) ---
+    # --- Main Conversation Loop ---
     try:
         prompt = get_initial_prompt()
         session_state.initial_prompt = prompt
@@ -127,17 +137,17 @@ def main():
             prompt = input("\n➡️  You: ").strip()
 
     finally:
-        # The cleanup block now uses the generic connector, which works for both providers.
+        # The cleanup block now uses the generic connector, which works for all providers.
         print("\nCleaning up session resources...")
         if session_state.uploaded_files:
             print(f"Deleting {len(session_state.uploaded_files)} uploaded files...")
-            # `f` is now our generic FileObject from llm.types
+            # `f` is our generic FileObject from llm.types
             for f in session_state.uploaded_files:
                 try:
                     # We call the delete_file method on the agent's connector,
                     # passing the provider-specific ID from our generic FileObject.
                     video_agent.connector.delete_file(file_id=f.id)
-                    print(f"  - Deleted {f.display_name} ({f.id})")
+                    # The connector's implementation handles the specifics (S3, Gemini API, or no-op).
                 except Exception as e:
                     # Log if a specific file fails to delete, but continue trying others
                     print(f"  - Failed to delete {f.id}: {e}")

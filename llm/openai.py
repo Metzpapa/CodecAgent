@@ -1,7 +1,10 @@
 # codec/llm/openai.py
 
+import os
+import uuid
 import base64
 import json
+from pathlib import Path
 from typing import List, Any, Dict
 
 # --- OpenAI specific imports ---
@@ -11,6 +14,7 @@ from openai.types.chat import ChatCompletion
 # --- Local, provider-agnostic imports ---
 from .base import LLMConnector
 from .types import Message, LLMResponse, FileObject, ContentPart, ToolCall
+from s3utils import S3Uploader # <-- IMPORT THE NEW UTILITY
 
 # --- Forward reference for type hinting ---
 from typing import TYPE_CHECKING
@@ -24,11 +28,26 @@ class OpenAIConnector(LLMConnector):
 
     This class implements the LLMConnector interface and handles all the specific
     details of communicating with the OpenAI API, including type translation,
-    API calls, and response parsing.
+    API calls, and response parsing. It now supports uploading images to an
+    S3-compatible service instead of sending them as base64.
     """
 
     def _initialize_client(self) -> openai.OpenAI:
-        """Initializes and returns the OpenAI client."""
+        """Initializes the OpenAI client and the S3 uploader if configured."""
+        # Initialize S3 Uploader if environment variables are set
+        self.s3_uploader = None
+        if os.getenv("S3_ENDPOINT_URL"):
+            print("🤖 S3 Uploader configured for OpenAI.")
+            self.s3_uploader = S3Uploader(
+                endpoint_url=os.environ["S3_ENDPOINT_URL"],
+                access_key=os.environ["S3_ACCESS_KEY_ID"],
+                secret_key=os.environ["S3_SECRET_ACCESS_KEY"],
+                bucket_name=os.environ["S3_BUCKET_NAME"],
+            )
+        else:
+            # This maintains the old base64 behavior if S3 is not configured
+            print("⚠️  S3 not configured for OpenAI. Falling back to base64 encoding for images.")
+
         return openai.OpenAI(api_key=self.api_key)
 
     def generate_content(
@@ -79,14 +98,28 @@ class OpenAIConnector(LLMConnector):
 
     def upload_file(self, file_path: str, mime_type: str, display_name: str) -> FileObject:
         """
-        "Uploads" a file for use with OpenAI's vision models.
-
-        Unlike Gemini, OpenAI's chat completion API doesn't use a file store. Instead,
-        it accepts images as base64-encoded data URIs directly in the prompt. This
-        method adapts to that by encoding the file and storing the data URI in our
-        generic FileObject, so the tool logic remains consistent.
+        Uploads a file for use with OpenAI.
+        If S3 is configured, it uploads to a public bucket and returns the URL.
+        Otherwise, it falls back to base64 encoding.
         """
-        print(f"Encoding '{display_name}' for OpenAI...")
+        # --- NEW S3 LOGIC ---
+        if self.s3_uploader:
+            file_extension = Path(file_path).suffix
+            # Create a unique name to avoid collisions in the bucket
+            object_name = f"frames/{uuid.uuid4().hex}{file_extension}"
+            
+            public_url = self.s3_uploader.upload(file_path, object_name)
+            
+            # The ID is the S3 object name (for deletion), and the URI is the public URL
+            return FileObject(
+                id=object_name,
+                display_name=display_name,
+                uri=public_url,
+                local_path=file_path
+            )
+
+        # --- FALLBACK BASE64 LOGIC (EXISTING CODE) ---
+        print(f"Encoding '{display_name}' for OpenAI (S3 not configured)...")
         try:
             with open(file_path, "rb") as f:
                 encoded_string = base64.b64encode(f.read()).decode('utf-8')
@@ -106,16 +139,25 @@ class OpenAIConnector(LLMConnector):
 
     def delete_file(self, file_id: str):
         """
-        Deletes a file. For OpenAI, this is a no-op since files are sent with each
-        request and not stored remotely. This method exists to satisfy the interface.
+        Deletes a file. If S3 is used, it deletes the object from the bucket.
+        Otherwise, it's a no-op for base64.
         """
-        # No remote file to delete for OpenAI's chat completion vision model.
-        # The file_id is the data URI, which is ephemeral.
-        print(f"  - No remote deletion needed for OpenAI file '{file_id[:50]}...'")
+        # --- NEW S3 LOGIC ---
+        if self.s3_uploader:
+            # The file_id is the S3 object_name.
+            # We check for a prefix to ensure we only try to delete S3 objects,
+            # not a base64 data URI if the fallback was used during the session.
+            if file_id.startswith("frames/"):
+                self.s3_uploader.delete(object_name=file_id)
+            else:
+                 print(f"  - Skipping non-S3 file deletion: '{file_id[:50]}...'")
+        else:
+            # --- FALLBACK NO-OP (EXISTING CODE) ---
+            print(f"  - No remote deletion needed for base64 file '{file_id[:50]}...'")
         pass
 
     # ==============================================================================
-    # == PRIVATE TRANSLATION METHODS ===============================================
+    # == PRIVATE TRANSLATION METHODS (UNCHANGED) ===================================
     # ==============================================================================
 
     def _tool_to_openai_tool(self, tool: 'BaseTool') -> Dict[str, Any]:
@@ -174,7 +216,8 @@ class OpenAIConnector(LLMConnector):
                     if part.type == 'text':
                         content_parts.append({"type": "text", "text": part.text})
                     elif part.type == 'image':
-                        # The FileObject's URI is the base64 data URI we created in upload_file.
+                        # The FileObject's URI is now either a public S3 URL
+                        # or the base64 data URI. This logic works for both.
                         content_parts.append({
                             "type": "image_url",
                             "image_url": {"url": part.file.uri}
