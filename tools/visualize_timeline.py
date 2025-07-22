@@ -48,8 +48,9 @@ class VisualizeTimelineTool(BaseTool):
     def description(self) -> str:
         return (
             "Generates a single image of the timeline, showing all video and audio tracks. "
-            "Clips are displayed with thumbnails and are labeled with numbers that correspond to a legend at the bottom of the image. "
-            "Use this tool to get a high-level visual understanding of the edit's structure, check for gaps, or identify specific clips by sight."
+            "Clips are displayed with thumbnails and are labeled directly with their `clip_id` underneath. "
+            "Use this tool to get a high-level visual understanding of the edit's structure, check for gaps, or identify specific clips by sight. "
+            "Note: For best results, use short, descriptive `clip_id`s, as long names will be truncated in the visualization."
         )
 
     @property
@@ -68,7 +69,6 @@ class VisualizeTimelineTool(BaseTool):
             if not final_image:
                 return "Error: Failed to generate timeline visualization. This may be due to an internal error."
 
-            # Create the temporary file that will be cleaned up in the finally block
             with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tmp_file:
                 final_image.save(tmp_file, format="JPEG", quality=85)
                 tmp_file_path = tmp_file.name
@@ -93,7 +93,6 @@ class VisualizeTimelineTool(BaseTool):
             return f"An unexpected error occurred while generating the timeline visualization: {e}"
         
         finally:
-            # --- FIX: Ensure temporary file is always cleaned up, even if upload fails ---
             if tmp_file_path and os.path.exists(tmp_file_path):
                 print(f"Cleaning up temporary visualization file: {tmp_file_path}")
                 os.unlink(tmp_file_path)
@@ -105,11 +104,12 @@ class _TimelineVisualizer:
     # --- CONSTANTS ---
     CANVAS_WIDTH = 1920
     RULER_HEIGHT = 40
-    TRACK_HEIGHT = 120
-    TRACK_LABEL_WIDTH = 60
-    LEGEND_LINE_HEIGHT = 30
+    TRACK_HEIGHT = 100
+    # --- FIX: Add margin for clip_id labels and define border color ---
+    TRACK_MARGIN = 30 
     MIN_VIEW_DURATION = 1.0
     MIN_CLIP_WIDTH = 1
+    TRACK_LABEL_WIDTH = 60
 
     # Colors
     COLOR_BG = (20, 20, 20)
@@ -119,14 +119,13 @@ class _TimelineVisualizer:
     COLOR_VIDEO_CLIP = (80, 80, 120)
     COLOR_AUDIO_CLIP = (80, 120, 80)
     COLOR_ERROR = (220, 40, 40)
-    COLOR_LABEL_BG = (255, 255, 255)
-    COLOR_LABEL_TEXT = (0, 0, 0)
+    COLOR_CLIP_BORDER = (150, 150, 150) # New border color
 
     def __init__(self, state: 'State', args: VisualizeTimelineArgs):
         self.state = state
         self.args = args
         self.font_sm = self._get_font(14)
-        self.font_md = self._get_font(20)
+        self.font_md = self._get_font(18)
         self.font_lg = self._get_font(24)
 
     def _get_font(self, size: int) -> ImageFont.FreeTypeFont:
@@ -138,10 +137,9 @@ class _TimelineVisualizer:
         except Exception:
             pass
         print(f"Warning: Arial font not found. Using default font for size {size}.")
-        return ImageFont.load_default()
+        return ImageFont.load_default(size)
 
     def render(self) -> Optional[Image.Image]:
-        """Main orchestration method to generate the image."""
         with tempfile.TemporaryDirectory() as tmpdir:
             self._prepare_view_window()
             self._collect_and_prepare_clips()
@@ -149,7 +147,6 @@ class _TimelineVisualizer:
             return self._draw_image()
 
     def _prepare_view_window(self):
-        """Calculates the time window and scaling factor, handling short durations."""
         self.view_start_sec = hms_to_seconds(self.args.start_time) if self.args.start_time else 0.0
         self.view_end_sec = hms_to_seconds(self.args.end_time) if self.args.end_time else self.state.get_timeline_duration()
 
@@ -167,31 +164,23 @@ class _TimelineVisualizer:
         self.pixels_per_second = self.render_width / self.view_duration if self.view_duration > 0 else 0
 
     def _collect_and_prepare_clips(self):
-        """Filters, sorts, and prepares clip data for rendering."""
         visible_clips = []
         for clip in self.state.timeline:
             clip_end_sec = clip.timeline_start_sec + clip.duration_sec
             if max(clip.timeline_start_sec, self.view_start_sec) < min(clip_end_sec, self.view_end_sec):
                 visible_clips.append(clip)
 
-        visible_clips.sort(key=lambda c: (c.timeline_start_sec, c.track_type, -c.track_number))
-
         self.prepared_clips = []
         self.thumbnail_jobs = {}
         self.tracks = defaultdict(list)
         
-        for i, clip in enumerate(visible_clips):
-            label = i + 1
-            
+        for clip in visible_clips:
             visible_start = max(clip.timeline_start_sec, self.view_start_sec)
             visible_end = min(clip.timeline_start_sec + clip.duration_sec, self.view_end_sec)
             x_pos = self.TRACK_LABEL_WIDTH + (visible_start - self.view_start_sec) * self.pixels_per_second
             width = (visible_end - visible_start) * self.pixels_per_second
             
-            prep_info = {
-                "clip": clip, "label": label, "x": x_pos, "width": width,
-                "thumbnails": []
-            }
+            prep_info = {"clip": clip, "x": x_pos, "width": width, "thumbnails": []}
 
             is_image = clip.source_path.lower().endswith(('.png', '.jpg', '.jpeg', '.webp'))
             if clip.track_type == 'video' and width >= self.MIN_CLIP_WIDTH:
@@ -202,7 +191,7 @@ class _TimelineVisualizer:
                 source_duration_for_thumb = visible_end - visible_start
 
                 for j in range(num_thumbs):
-                    job_id = f"thumb_{label}_{j}"
+                    job_id = f"thumb_{clip.clip_id}_{j}"
                     if is_image:
                         source_time = 0
                     else:
@@ -216,7 +205,6 @@ class _TimelineVisualizer:
             self.tracks[(clip.track_type, clip.track_number)].append(prep_info)
 
     def _extract_thumbnails(self, tmpdir: str):
-        """Extracts all required frames in parallel, handling errors."""
         self.thumbnail_results = {}
         with ThreadPoolExecutor(max_workers=8) as executor:
             future_to_job = {
@@ -232,11 +220,9 @@ class _TimelineVisualizer:
                     self.thumbnail_results[job_id] = "error"
 
     def _extract_single_thumb(self, job_id: str, job_data: dict, tmpdir: str) -> str:
-        """Logic for one ffmpeg/Pillow job, wrapped for the executor."""
         source_path = job_data["source_path"]
         if job_data["is_image"]:
             return source_path
-
         try:
             output_path = os.path.join(tmpdir, f"{job_id}.jpg")
             (
@@ -251,13 +237,12 @@ class _TimelineVisualizer:
             return "error"
 
     def _draw_image(self) -> Image.Image:
-        """Composes the final image from all prepared data."""
-        # --- FIX: Sort tracks to place video above audio, matching NLE conventions ---
         sort_order = {'video': 0, 'audio': 1}
         sorted_tracks = sorted(self.tracks.keys(), key=lambda t: (sort_order.get(t[0], 99), -t[1]))
         
-        legend_height = self.LEGEND_LINE_HEIGHT * (len(self.prepared_clips) + 1)
-        canvas_height = self.RULER_HEIGHT + (len(sorted_tracks) * self.TRACK_HEIGHT) + legend_height
+        # --- FIX: Canvas height now accounts for track margin ---
+        total_track_height = len(sorted_tracks) * (self.TRACK_HEIGHT + self.TRACK_MARGIN)
+        canvas_height = self.RULER_HEIGHT + total_track_height
         
         img = Image.new("RGB", (self.CANVAS_WIDTH, int(canvas_height)), self.COLOR_BG)
         draw = ImageDraw.Draw(img, "RGBA")
@@ -269,14 +254,14 @@ class _TimelineVisualizer:
         for track_type, track_number in sorted_tracks:
             track_map[(track_type, track_number)] = y_offset
             self._draw_track_lane(draw, y_offset, f"{track_type[0].upper()}{track_number}")
-            y_offset += self.TRACK_HEIGHT
+            # --- FIX: Increment y_offset by full track height + margin ---
+            y_offset += self.TRACK_HEIGHT + self.TRACK_MARGIN
 
         for prep_info in self.prepared_clips:
             clip = prep_info["clip"]
             y_pos = track_map[(clip.track_type, clip.track_number)]
             self._draw_clip(img, draw, prep_info, y_pos)
-
-        self._draw_legend(draw, y_offset)
+            
         return img
 
     def _draw_ruler(self, draw: ImageDraw.Draw):
@@ -301,7 +286,8 @@ class _TimelineVisualizer:
         clip = prep_info["clip"]
         
         base_color = self.COLOR_VIDEO_CLIP if clip.track_type == 'video' else self.COLOR_AUDIO_CLIP
-        draw.rectangle([x, y_pos, x + width, y_pos + self.TRACK_HEIGHT], fill=base_color)
+        # --- FIX: Draw rectangle with a border ---
+        draw.rectangle([x, y_pos, x + width, y_pos + self.TRACK_HEIGHT], fill=base_color, outline=self.COLOR_CLIP_BORDER)
 
         if clip.track_type == 'video':
             thumb_width = width / len(prep_info["thumbnails"]) if prep_info["thumbnails"] else 0
@@ -320,35 +306,25 @@ class _TimelineVisualizer:
                          print(f"ERROR: Failed to paste thumbnail for job {job_id}: {e}")
                          draw.line([thumb_x + 5, y_pos + 5, thumb_x + thumb_width - 5, y_pos + self.TRACK_HEIGHT - 5], fill=self.COLOR_ERROR, width=3)
         else:
-            draw.text((x + width/2 - 25, y_pos + self.TRACK_HEIGHT/2 - 10), "AUDIO", font=self.font_md, fill=self.COLOR_TEXT)
+            # --- FIX: Offset "AUDIO" text to avoid overlap ---
+            draw.text((x + 10, y_pos + self.TRACK_HEIGHT/2 - 10), "AUDIO", font=self.font_md, fill=self.COLOR_TEXT)
 
-        label_text = str(prep_info["label"])
-        radius = 12
-        center_x, center_y = x + width / 2, y_pos + self.TRACK_HEIGHT / 2
-        draw.ellipse([center_x - radius, center_y - radius, center_x + radius, center_y + radius], fill=self.COLOR_LABEL_BG)
-        text_bbox = draw.textbbox((0,0), label_text, font=self.font_md)
-        text_w, text_h = text_bbox[2] - text_bbox[0], text_bbox[3] - text_bbox[1]
-        draw.text((center_x - text_w/2, center_y - text_h/2), label_text, font=self.font_md, fill=self.COLOR_LABEL_TEXT)
-
-    def _draw_legend(self, draw: ImageDraw.Draw, y_start: int):
-        draw.text((10, y_start + 5), "Legend:", font=self.font_lg, fill=self.COLOR_TEXT)
-        y_offset = y_start + self.LEGEND_LINE_HEIGHT + 5
+        # --- FIX: Draw truncated clip_id below the clip instead of a legend ---
+        label_y_pos = y_pos + self.TRACK_HEIGHT + 5
+        max_label_width = width - 4 # Give a little padding
         
-        for prep_info in self.prepared_clips:
-            label_text = str(prep_info["label"])
-            radius = 10
-            draw.ellipse([20 - radius, y_offset - radius, 20 + radius, y_offset + radius], fill=self.COLOR_LABEL_BG)
-            text_bbox = draw.textbbox((0,0), label_text, font=self.font_sm)
-            text_w, text_h = text_bbox[2] - text_bbox[0], text_bbox[3] - text_bbox[1]
-            draw.text((20 - text_w/2, y_offset - text_h/2), label_text, font=self.font_sm, fill=self.COLOR_LABEL_TEXT)
-            
-            clip = prep_info["clip"]
-            legend_str = f"{clip.clip_id} (Source: {os.path.basename(clip.source_path)})"
-            draw.text((45, y_offset - 8), legend_str, font=self.font_md, fill=self.COLOR_TEXT)
-            y_offset += self.LEGEND_LINE_HEIGHT
+        clip_id_text = clip.clip_id
+        
+        # Truncate text if it's too wide for the clip
+        while draw.textbbox((0,0), clip_id_text, font=self.font_sm)[2] > max_label_width and len(clip_id_text) > 1:
+            clip_id_text = clip_id_text[:-1]
+        
+        if len(clip_id_text) < len(clip.clip_id):
+            clip_id_text = clip_id_text[:-2] + '..' # Add ellipsis if truncated
+
+        draw.text((x + 2, label_y_pos), clip_id_text, font=self.font_sm, fill=self.COLOR_TEXT)
 
     def _letterbox(self, img: Image.Image, target_size: Tuple[int, int]) -> Image.Image:
-        """Resizes an image to fit within target_size, preserving aspect ratio with black bars."""
         target_w, target_h = target_size
         if target_w <= 0 or target_h <= 0: return Image.new("RGB", (1,1), self.COLOR_BG)
 
