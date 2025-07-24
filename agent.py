@@ -50,13 +50,13 @@ class Agent:
         if provider == "gemini":
             print("🤖 Using Gemini provider.")
             api_key = os.environ.get("GEMINI_API_KEY")
-            model_name = os.environ.get("GEMINI_MODEL_NAME", "gemini-1.5-pro-latest")
+            model_name = os.environ.get("GEMINI_MODEL_NAME", "gemini-2.5-pro")
             self.connector = GeminiConnector(api_key=api_key, model_name=model_name)
         
         elif provider == "openai":
             print("🤖 Using OpenAI provider.")
             api_key = os.environ.get("OPENAI_API_KEY")
-            model_name = os.environ.get("OPENAI_MODEL_NAME", "gpt-4o") # Default to gpt-4o
+            model_name = os.environ.get("OPENAI_MODEL_NAME", "gpt-4.1") # Default to gpt-4o
             self.connector = OpenAIConnector(api_key=api_key, model_name=model_name)
         
         else:

@@ -60,9 +60,6 @@ class FindMediaArgs(BaseModel):
         "1080p",
         description="The desired maximum video quality for download. 'best' will get the highest available. Ignored for audio-only."
     )
-    # --- FIX: Changed type hint from Tuple to an Annotated List ---
-    # This generates a JSON schema that is compliant with the OpenAI API,
-    # resolving the "array schema missing items" error.
     download_range: Optional[Annotated[List[str], Field(min_length=2, max_length=2)]] = Field(
         None,
         description="Optional. Download only a specific segment. Provide a list of [start_time, end_time] in 'HH:MM:SS' format. E.g., ['00:01:30', '00:01:45']."
@@ -113,14 +110,20 @@ class FindMediaTool(BaseTool):
     def _execute_download(self, state: 'State', args: FindMediaArgs) -> str:
         print(f"Attempting to download media for query: '{args.query}'")
         
-        # 1. Configure yt-dlp options
-        output_template = os.path.join(state.assets_directory, args.output_filename or '%(title)s.%(ext)s')
-        
+        # --- FIX 1: Prevent double-extension bug ---
+        # If a filename is provided, strip its extension. yt-dlp's post-processors
+        # will add the correct final extension (e.g., .mp3, .mp4).
+        if args.output_filename:
+            base_name = Path(args.output_filename).stem
+            output_template = os.path.join(state.assets_directory, f'{base_name}.%(ext)s')
+        else:
+            output_template = os.path.join(state.assets_directory, '%(title)s.%(ext)s')
+
         ydl_opts = {
             'outtmpl': output_template,
             'quiet': True,
             'noplaylist': True,
-            'default_search': 'ytsearch1', # Download the first result if it's a search
+            'default_search': 'ytsearch1',
         }
 
         if args.media_type == 'audio':
@@ -146,21 +149,22 @@ class FindMediaTool(BaseTool):
             start_sec = hms_to_seconds(f"{args.download_range[0]}.000")
             end_sec = hms_to_seconds(f"{args.download_range[1]}.000")
             ydl_opts['download_ranges'] = yt_dlp.utils.download_range_func(None, [(start_sec, end_sec)])
-            # When downloading a range, yt-dlp needs a specific postprocessor
             ydl_opts.setdefault('postprocessors', []).append({
                 'key': 'FFmpegVideoRemuxer',
                 'preferedformat': 'mp4'
             })
 
-
-        # 2. Execute download
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(args.query, download=True)
-            # If it was a search, info is a playlist dict
             video_info = info['entries'][0] if 'entries' in info else info
             
-            # yt-dlp might change the extension, so we need the final path
-            final_filepath = ydl.prepare_filename(video_info)
+            # --- FIX 2: Get the *actual* final filename for an accurate success message ---
+            # After post-processing, yt-dlp stores the final path in the info dict.
+            final_filepath = video_info.get('filepath')
+            if not final_filepath:
+                # Fallback in case the 'filepath' key isn't available
+                final_filepath = ydl.prepare_filename(video_info)
+
             final_filename = os.path.basename(final_filepath)
 
         return f"Successfully downloaded '{final_filename}' and added it to the asset library."
@@ -170,7 +174,7 @@ class FindMediaTool(BaseTool):
         
         ydl_opts = {
             'quiet': True,
-            'extract_flat': 'in_playlist', # Faster, gets metadata without deep dive
+            'extract_flat': 'in_playlist',
             'default_search': f"ytsearch{args.search_limit}",
         }
 
@@ -198,7 +202,6 @@ class FindMediaTool(BaseTool):
     def _execute_preview(self, args: FindMediaArgs, connector: 'LLMConnector', state: 'State') -> Tuple[str, List[ContentPart]]:
         print(f"Generating preview for query: '{args.query}'")
         
-        # 1. Get search results metadata (same as search_only)
         ydl_opts = {
             'quiet': True,
             'extract_flat': 'in_playlist',
@@ -210,7 +213,6 @@ class FindMediaTool(BaseTool):
         if not search_info or 'entries' not in search_info:
             return ("No search results found.", [])
 
-        # 2. Create frame extraction jobs
         frame_jobs = []
         results_with_jobs = []
         for i, entry in enumerate(search_info['entries']):
@@ -235,7 +237,6 @@ class FindMediaTool(BaseTool):
                 "job_ids": job_ids_for_this_result
             })
 
-        # 3. Execute jobs in parallel
         uploaded_frames: Dict[str, Union[FileObject, str]] = {}
         with tempfile.TemporaryDirectory() as tmpdir:
             with ThreadPoolExecutor(max_workers=8) as executor:
@@ -250,11 +251,9 @@ class FindMediaTool(BaseTool):
                     except Exception as e:
                         uploaded_frames[job['id']] = f"System error during frame processing: {e}"
 
-        # 4. Assemble the multimodal response
         multimodal_parts: List[ContentPart] = []
         for i, result_data in enumerate(results_with_jobs):
             entry = result_data['metadata']
-            # Add text header for the result
             header_text = (
                 f"--- Preview for Result {i+1} ---\n"
                 f"Title: {entry.get('title', 'N/A')}\n"
@@ -264,13 +263,12 @@ class FindMediaTool(BaseTool):
             )
             multimodal_parts.append(ContentPart(type='text', text=header_text))
 
-            # Add the corresponding frames
             for job_id in result_data['job_ids']:
                 result = uploaded_frames.get(job_id)
                 if isinstance(result, FileObject):
                     state.uploaded_files.append(result)
                     multimodal_parts.append(ContentPart(type='image', file=result))
-                else: # It's an error string
+                else:
                     error_text = f"SYSTEM: Could not generate preview frame. Error: {result or 'Unknown'}"
                     multimodal_parts.append(ContentPart(type='text', text=error_text))
 
@@ -280,13 +278,11 @@ class FindMediaTool(BaseTool):
     # --- Private Helpers ---
 
     def _calculate_timestamps(self, duration_sec: float, num_frames: int) -> List[float]:
-        """Calculates evenly spaced timestamps within a duration."""
         if num_frames <= 0:
             return []
         if num_frames == 1:
             return [duration_sec / 2]
         
-        # Inset the first and last frames to avoid black screens at start/end
         start_offset = duration_sec * 0.05
         end_offset = duration_sec * 0.95
         effective_duration = end_offset - start_offset
@@ -300,17 +296,14 @@ class FindMediaTool(BaseTool):
         connector: 'LLMConnector',
         tmpdir: str
     ) -> Union[FileObject, str]:
-        """Worker function to extract a frame from a URL and upload it."""
         output_path = Path(tmpdir) / f"{job['id']}.jpg"
         try:
-            # Use ffmpeg to extract a frame directly from the video URL
             (
                 ffmpeg.input(job['video_url'], ss=job['timestamp_sec'])
                 .output(str(output_path), vframes=1, format='image2', vcodec='mjpeg')
                 .run(capture_stdout=True, capture_stderr=True, overwrite_output=True)
             )
 
-            # Upload the extracted frame
             print(f"Uploading frame: {job['display_name']}")
             uploaded_file_obj = connector.upload_file(
                 file_path=str(output_path),
