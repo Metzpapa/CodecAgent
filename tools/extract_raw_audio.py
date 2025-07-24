@@ -1,4 +1,4 @@
-# codec/tools/extract_audio.py
+# codec/tools/extract_raw_audio.py
 
 import os
 import tempfile
@@ -27,7 +27,7 @@ def _extract_and_upload_audio_segment(
 ) -> Union[FileObject, str]:
     """
     Core reusable logic to extract an audio segment from a media file, save it
-    temporarily, and upload it to the Gemini API.
+    temporarily, and upload it to the LLM provider.
 
     Args:
         file_path: The absolute path to the source media file.
@@ -65,8 +65,8 @@ def _extract_and_upload_audio_segment(
         return error_msg
 
 
-class ExtractAudioArgs(BaseModel):
-    """Arguments for the extract_audio tool."""
+class ExtractRawAudioArgs(BaseModel):
+    """Arguments for the extract_raw_audio tool."""
     source_filename: str = Field(
         ...,
         description="The exact name of the video or audio file from the user's media library to extract audio from (e.g., 'interview.mp4', 'background_music.wav')."
@@ -83,29 +83,34 @@ class ExtractAudioArgs(BaseModel):
     )
 
 
-class ExtractAudioTool(BaseTool):
+class ExtractRawAudioTool(BaseTool):
     """
-    A tool to extract a segment of audio from a media file and provide it
+    A tool to extract a segment of raw audio from a media file and provide it
     to the model for native processing.
     """
 
     @property
     def name(self) -> str:
-        return "extract_audio"
+        return "extract_raw_audio"
 
     @property
     def description(self) -> str:
         return (
-            "Extracts an audio segment from a single video or audio file. "
-            "Use this to 'hear' the contents of a source file. "
+            "Extracts a raw audio segment from a single video or audio file. "
+            "Use this to provide raw audio for a model to 'hear' and process natively. "
+            "This is only supported by models with native audio ingestion capabilities. "
             "To hear the audio from the composed timeline, use 'extract_timeline_audio'."
         )
 
     @property
-    def args_schema(self):
-        return ExtractAudioArgs
+    def supported_providers(self) -> Optional[List[str]]:
+        return ['gemini']
 
-    def execute(self, state: 'State', args: ExtractAudioArgs, connector: 'LLMConnector') -> Union[str, Tuple[str, List[ContentPart]]]:
+    @property
+    def args_schema(self):
+        return ExtractRawAudioArgs
+
+    def execute(self, state: 'State', args: ExtractRawAudioArgs, connector: 'LLMConnector') -> Union[str, Tuple[str, List[ContentPart]]]:
         # --- 1. Validation & Setup ---
         full_path = os.path.join(state.assets_directory, args.source_filename)
         if not os.path.exists(full_path):
@@ -151,9 +156,9 @@ class ExtractAudioTool(BaseTool):
             audio_file = result
             state.uploaded_files.append(audio_file)
 
-            # --- 4. MODIFIED: Construct the multimodal response as a tuple ---
+            # --- 4. Construct the multimodal response as a tuple ---
             confirmation_text = (
-                f"Successfully extracted and uploaded audio from '{args.source_filename}' "
+                f"Successfully extracted and uploaded raw audio from '{args.source_filename}' "
                 f"from {start_sec:.2f}s to {end_sec:.2f}s. The following content contains the audio information."
             )
             

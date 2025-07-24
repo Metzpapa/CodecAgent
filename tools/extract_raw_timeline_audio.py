@@ -1,4 +1,4 @@
-# codec/tools/extract_timeline_audio.py
+# codec/tools/extract_raw_timeline_audio.py
 
 import os
 from typing import Optional, TYPE_CHECKING, Union, List, Tuple
@@ -11,7 +11,8 @@ from pydantic import BaseModel, Field
 
 from .base import BaseTool
 from state import TimelineClip
-from .extract_audio import _extract_and_upload_audio_segment # REUSING THE HELPER
+# --- MODIFIED: Update the import to point to the newly renamed file ---
+from .extract_raw_audio import _extract_and_upload_audio_segment # REUSING THE HELPER
 from utils import hms_to_seconds
 from llm.types import Message, ContentPart, FileObject
 
@@ -21,8 +22,9 @@ if TYPE_CHECKING:
     from llm.base import LLMConnector
 
 
-class ExtractTimelineAudioArgs(BaseModel):
-    """Arguments for the extract_timeline_audio tool."""
+# --- MODIFIED: Rename the arguments class ---
+class ExtractRawTimelineAudioArgs(BaseModel):
+    """Arguments for the extract_raw_timeline_audio tool."""
     start_time: Optional[str] = Field(
         None,
         description="The timestamp on the main timeline to start extracting audio from. Format: HH:MM:SS.mmm. If omitted, starts from the beginning of the timeline.",
@@ -35,29 +37,39 @@ class ExtractTimelineAudioArgs(BaseModel):
     )
 
 
-class ExtractTimelineAudioTool(BaseTool):
+# --- MODIFIED: Rename the tool class ---
+class ExtractRawTimelineAudioTool(BaseTool):
     """
-    A tool to extract the audio from all clips on audio tracks within a given
+    A tool to extract the raw audio from all clips on audio tracks within a given
     time range on the timeline. Use this to 'hear' the current edit.
     """
 
     @property
     def name(self) -> str:
-        return "extract_timeline_audio"
+        # --- MODIFIED: Update the tool name ---
+        return "extract_raw_timeline_audio"
 
     @property
     def description(self) -> str:
+        # --- MODIFIED: Update the description for clarity and purpose ---
         return (
-            "Extracts the audio from all clips on audio tracks (A1, A2, etc.) within a given time range on the timeline. "
-            "This is used to 'hear' the current edit, mixing all audio sources. It returns separate audio segments for each clip found in the range. "
-            "To hear a single source file, use 'extract_audio'."
+            "Extracts the raw audio from all clips on audio tracks (A1, A2, etc.) within a given time range on the timeline. "
+            "This is used to provide raw audio for a model to 'hear' and process the current edit natively, mixing all audio sources. "
+            "It returns separate audio segments for each clip found in the range. This is only supported by models with native audio ingestion capabilities. "
+            "To hear a single source file, use 'extract_raw_audio'."
         )
+
+    # --- NEW: Add the property to restrict to Gemini ---
+    @property
+    def supported_providers(self) -> Optional[List[str]]:
+        return ['gemini']
 
     @property
     def args_schema(self):
-        return ExtractTimelineAudioArgs
+        # --- MODIFIED: Return the renamed arguments class ---
+        return ExtractRawTimelineAudioArgs
 
-    def execute(self, state: 'State', args: ExtractTimelineAudioArgs, connector: 'LLMConnector') -> Union[str, Tuple[str, List[ContentPart]]]:
+    def execute(self, state: 'State', args: ExtractRawTimelineAudioArgs, connector: 'LLMConnector') -> Union[str, Tuple[str, List[ContentPart]]]:
         if not state.timeline:
             return "Error: The timeline is empty. Cannot extract audio from an empty timeline."
 
@@ -123,11 +135,11 @@ class ExtractTimelineAudioTool(BaseTool):
                     except Exception as e:
                         upload_results.append((clip, f"Unexpected system error: {e}"))
 
-            # --- 3. MODIFIED: Assemble Response as a tuple ---
+            # --- 3. Assemble Response as a tuple ---
             upload_results.sort(key=lambda x: x[0].timeline_start_sec) # Sort by timeline start time
             
             confirmation_text = (
-                f"Successfully extracted audio for {len(upload_results)} clips found on audio tracks between {start_sec:.2f}s and {end_sec:.2f}s of the timeline. "
+                f"Successfully extracted raw audio for {len(upload_results)} clips found on audio tracks between {start_sec:.2f}s and {end_sec:.2f}s of the timeline. "
                 "The following content contains the audio information."
             )
             

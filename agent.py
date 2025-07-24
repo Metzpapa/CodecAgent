@@ -50,13 +50,13 @@ class Agent:
         if provider == "gemini":
             print("🤖 Using Gemini provider.")
             api_key = os.environ.get("GEMINI_API_KEY")
-            model_name = os.environ.get("GEMINI_MODEL_NAME", "gemini-2.5-pro")
+            model_name = os.environ.get("GEMINI_MODEL_NAME", "gemini-1.5-pro")
             self.connector = GeminiConnector(api_key=api_key, model_name=model_name)
         
         elif provider == "openai":
             print("🤖 Using OpenAI provider.")
             api_key = os.environ.get("OPENAI_API_KEY")
-            model_name = os.environ.get("OPENAI_MODEL_NAME", "gpt-4.1") # Default to gpt-4o
+            model_name = os.environ.get("OPENAI_MODEL_NAME", "gpt-4o")
             self.connector = OpenAIConnector(api_key=api_key, model_name=model_name)
         
         else:
@@ -65,20 +65,35 @@ class Agent:
 
         print("Loading tools...")
         self.tools = self._load_tools()
-        print(f"Loaded {len(self.tools)} tools: {', '.join(self.tools.keys())}")
+        print(f"✅ Loaded {len(self.tools)} tools: {', '.join(self.tools.keys())}")
 
     def _load_tools(self) -> Dict[str, BaseTool]:
         """
-        Dynamically discovers and loads all tool classes from the `tools` directory.
+        Dynamically discovers and loads all tool classes from the `tools` directory,
+        filtering them based on the active LLM provider.
         """
         loaded_tools = {}
+        provider = os.getenv("LLM_PROVIDER", "gemini").lower()
+
         for _, module_name, _ in pkgutil.iter_modules(tools.__path__, tools.__name__ + "."):
-            if not module_name.endswith(".base"):
-                module = importlib.import_module(module_name)
-                for _, cls in inspect.getmembers(module, inspect.isclass):
-                    if issubclass(cls, BaseTool) and cls is not BaseTool:
-                        tool_instance = cls()
-                        loaded_tools[tool_instance.name] = tool_instance
+            if module_name.endswith(".base"):
+                continue
+            
+            module = importlib.import_module(module_name)
+            for _, cls in inspect.getmembers(module, inspect.isclass):
+                if issubclass(cls, BaseTool) and cls is not BaseTool:
+                    tool_instance = cls()
+                    
+                    # --- Provider Compatibility Check ---
+                    # If a tool specifies a list of supported providers, check if the
+                    # current provider is in that list. If not, skip loading the tool.
+                    # If the list is None (the default), the tool is considered universal.
+                    if tool_instance.supported_providers is not None:
+                        if provider not in tool_instance.supported_providers:
+                            print(f"  - Skipping tool '{tool_instance.name}' (not supported by '{provider}' provider).")
+                            continue
+                    
+                    loaded_tools[tool_instance.name] = tool_instance
         return loaded_tools
 
     def run(self, prompt: str):
@@ -135,7 +150,6 @@ class Agent:
                 print("\n✅ Agent has finished its turn.")
                 break
 
-            # --- MODIFIED: Unified tool execution logic ---
             standard_tool_results: List[ContentPart] = []
             multimodal_user_parts: List[ContentPart] = []
 
@@ -153,9 +167,7 @@ class Agent:
                     except Exception as e:
                         tool_output = f"Error executing tool '{call.name}': {e}"
 
-                # Process the tool's output
                 if isinstance(tool_output, str):
-                    # Standard tool: The output is a simple string.
                     print(f"🛠️ Tool Result:\n{tool_output}\n")
                     standard_tool_results.append(ContentPart(
                         type='tool_result',
@@ -164,32 +176,22 @@ class Agent:
                         text=tool_output
                     ))
                 elif isinstance(tool_output, tuple):
-                    # Multimodal tool: The output is a (confirmation_string, list_of_parts) tuple.
                     confirmation_string, new_multimodal_parts = tool_output
                     print(f"🛠️ Tool Result:\n{confirmation_string}\n")
                     
-                    # 1. Add the text confirmation to the standard tool results.
                     standard_tool_results.append(ContentPart(
                         type='tool_result',
                         tool_call_id=call.id,
                         tool_name=call.name,
                         text=confirmation_string
                     ))
-                    # 2. Collect the multimodal parts to be sent in a separate user message.
                     multimodal_user_parts.extend(new_multimodal_parts)
 
-            # After processing all tool calls, append the results to history in the correct order.
-            
-            # 1. Append the 'tool' message with all the text-based results.
-            # This is required by OpenAI to close the loop on tool calls.
             if standard_tool_results:
                 tool_response_message = Message(role="tool", parts=standard_tool_results)
                 self.state.history.append(tool_response_message)
 
-            # 2. If there was any multimodal output, append it as a new 'user' message.
-            # This presents the visual/audio information to the model for the next turn.
             if multimodal_user_parts:
                 print("🖼️  Presenting new multimodal information to the agent.")
-                multimodal_user_message = Message(role="user", parts=multimodal_user_parts)
+                multimodal_user_message = Message(role="user", parts=multimodal_user_message)
                 self.state.history.append(multimodal_user_message)
-            # --- END OF MODIFICATION ---

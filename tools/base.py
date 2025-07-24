@@ -1,7 +1,8 @@
 # codec/tools/base.py
 
 from abc import ABC, abstractmethod
-from typing import Type, TYPE_CHECKING, Union, Tuple, List
+# --- MODIFIED: Add Optional for the new property's return type ---
+from typing import Type, TYPE_CHECKING, Union, Tuple, List, Optional
 
 from pydantic import BaseModel
 
@@ -44,6 +45,20 @@ class BaseTool(ABC):
     def args_schema(self) -> Type[BaseModel]:
         """The Pydantic model that defines the arguments for the tool."""
         pass
+
+    @property
+    def supported_providers(self) -> Optional[List[str]]:
+        """
+        Specifies which LLM providers this tool is compatible with.
+
+        - Returns a list of provider names in lowercase (e.g., ['gemini', 'openai']).
+        - Returns None (the default) to indicate the tool is universal and works
+          for all configured providers.
+
+        This should be overridden in any tool class that relies on a
+        provider-specific capability.
+        """
+        return None
 
     @abstractmethod
     def execute(self, state: 'State', args: BaseModel, connector: 'LLMConnector') -> Union[str, Tuple[str, List['ContentPart']]]:
