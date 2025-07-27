@@ -2,7 +2,7 @@
 
 import os
 import uuid
-from typing import List, Any, Dict
+from typing import List, Any, Dict, Optional
 
 # --- Google GenAI specific imports ---
 from google import genai
@@ -58,10 +58,12 @@ class GeminiConnector(LLMConnector):
         self,
         history: List[Message],
         tools: List['BaseTool'],
-        system_prompt: str
+        system_prompt: str,
+        last_response_id: Optional[str]
     ) -> LLMResponse:
         """
         Generates content using the Gemini API, replicating the logic from the original agent.
+        The `last_response_id` is ignored as this API is stateless.
         """
         # --- 1. Translate generic inputs to Gemini-specific formats ---
         gemini_history = self._messages_to_gemini_content(history)
@@ -170,7 +172,6 @@ class GeminiConnector(LLMConnector):
             gemini_parts = []
             for part in msg.parts:
                 if part.type == 'text':
-                    # --- FIX #1: Use the Part constructor directly for text ---
                     gemini_parts.append(types.Part(text=part.text))
                 elif part.type in ['image', 'audio']:
                     mime_type = 'image/jpeg' if part.type == 'image' else 'audio/mpeg'
@@ -179,7 +180,6 @@ class GeminiConnector(LLMConnector):
                         mime_type=mime_type
                     ))
                 elif part.type == 'tool_result':
-                    # --- FIX #2: Ensure the response is a dictionary, matching original logic ---
                     response_dict = {"result": part.text}
                     gemini_parts.append(types.Part.from_function_response(
                         name=part.tool_name,
@@ -196,6 +196,7 @@ class GeminiConnector(LLMConnector):
         """
         if gemini_response.prompt_feedback and gemini_response.prompt_feedback.block_reason:
             return LLMResponse(
+                id=None,
                 message=None,
                 finish_reason=gemini_response.prompt_feedback.block_reason.name,
                 is_blocked=True,
@@ -204,6 +205,7 @@ class GeminiConnector(LLMConnector):
 
         if not gemini_response.candidates:
             return LLMResponse(
+                id=None,
                 message=None,
                 finish_reason="NO_CANDIDATES",
                 is_blocked=True,
@@ -215,6 +217,7 @@ class GeminiConnector(LLMConnector):
 
         if finish_reason in BLOCKED_FINISH_REASONS:
             return LLMResponse(
+                id=None,
                 message=None,
                 finish_reason=finish_reason.name,
                 is_blocked=True,
@@ -244,6 +247,7 @@ class GeminiConnector(LLMConnector):
         message = Message(role="model", parts=response_parts)
 
         return LLMResponse(
+            id=None,
             message=message,
             finish_reason=finish_reason.name,
             is_blocked=False,

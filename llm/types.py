@@ -27,7 +27,7 @@ class ToolCall(BaseModel):
     """A generic, provider-agnostic representation of a tool call requested by the model."""
     id: str = Field(
         ...,
-        description="A unique identifier for this specific tool call instance. Required for mapping results back to the call."
+        description="A unique identifier for this specific tool call instance. Required for mapping results back to the call. For OpenAI Responses API, this is the 'call_id'."
     )
     name: str = Field(
         ...,
@@ -36,6 +36,10 @@ class ToolCall(BaseModel):
     args: Dict[str, Any] = Field(
         ...,
         description="The arguments for the tool, provided as a dictionary."
+    )
+    internal_id: Optional[str] = Field(
+        None,
+        description="Provider-internal ID for the tool call object itself (e.g., OpenAI's 'fc_...' ID). This is separate from the ID used to link results."
     )
 
 class ContentPart(BaseModel):
@@ -98,4 +102,9 @@ class LLMResponse(BaseModel):
     raw_response: Any = Field(
         ...,
         description="The original, raw response object from the provider's API, for debugging purposes."
+    )
+    # --- MODIFIED: Add a field to carry the response ID for stateful APIs ---
+    id: Optional[str] = Field(
+        None,
+        description="The unique ID of this specific response, if provided by a stateful API."
     )

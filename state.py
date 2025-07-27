@@ -57,6 +57,8 @@ class State:
         self.width: Optional[int] = None
         self.height: Optional[int] = None
         self.initial_prompt: Optional[str] = None
+        # --- MODIFIED: Add a field to track the conversation for stateful APIs ---
+        self.last_response_id: Optional[str] = None
 
     def _sort_timeline(self):
         """

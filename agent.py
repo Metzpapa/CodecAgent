@@ -11,7 +11,7 @@ import sys
 # --- MODIFIED: Import all connectors and the base class ---
 from llm.base import LLMConnector
 from llm.gemini import GeminiConnector
-from llm.openai import OpenAIConnector
+from llm.openairesponsesapi import OpenAIResponsesAPIConnector
 from llm.types import Message, ContentPart, ToolCall
 
 # Local imports
@@ -48,16 +48,16 @@ class Agent:
         self.connector: LLMConnector
 
         if provider == "gemini":
-            print("🤖 Using Gemini provider.")
+            print("🤖 Using Gemini provider (Stateless).")
             api_key = os.environ.get("GEMINI_API_KEY")
             model_name = os.environ.get("GEMINI_MODEL_NAME", "gemini-1.5-pro")
             self.connector = GeminiConnector(api_key=api_key, model_name=model_name)
         
         elif provider == "openai":
-            print("🤖 Using OpenAI provider.")
+            print("🤖 Using OpenAI provider (Stateful Responses API).")
             api_key = os.environ.get("OPENAI_API_KEY")
-            model_name = os.environ.get("OPENAI_MODEL_NAME", "gpt-4o")
-            self.connector = OpenAIConnector(api_key=api_key, model_name=model_name)
+            model_name = os.environ.get("OPENAI_MODEL_NAME", "gpt-4.1-mini")
+            self.connector = OpenAIResponsesAPIConnector(api_key=api_key, model_name=model_name)
         
         else:
             print(f"❌ Error: Unsupported LLM_PROVIDER '{provider}'. Please use 'gemini' or 'openai'.")
@@ -84,10 +84,6 @@ class Agent:
                 if issubclass(cls, BaseTool) and cls is not BaseTool:
                     tool_instance = cls()
                     
-                    # --- Provider Compatibility Check ---
-                    # If a tool specifies a list of supported providers, check if the
-                    # current provider is in that list. If not, skip loading the tool.
-                    # If the list is None (the default), the tool is considered universal.
                     if tool_instance.supported_providers is not None:
                         if provider not in tool_instance.supported_providers:
                             print(f"  - Skipping tool '{tool_instance.name}' (not supported by '{provider}' provider).")
@@ -115,10 +111,13 @@ class Agent:
                 user_request=self.state.initial_prompt
             )
 
+            # --- MODIFIED: Pass the last response ID to the connector ---
+            # A stateful connector will use this ID; a stateless one will ignore it.
             response = self.connector.generate_content(
                 history=self.state.history,
                 tools=list(self.tools.values()),
                 system_prompt=final_system_prompt,
+                last_response_id=self.state.last_response_id
             )
 
             if response.is_blocked or not response.message:
@@ -129,6 +128,11 @@ class Agent:
                 if response.finish_reason in ["SAFETY", "BLOCKLIST", "API_ERROR"]:
                     self.state.history.pop()
                 break
+
+            # --- MODIFIED: Update state with the new response ID for the next turn ---
+            # This is the key for maintaining a stateful conversation.
+            if response.id:
+                self.state.last_response_id = response.id
 
             model_message = response.message
             self.state.history.append(model_message)
@@ -193,5 +197,5 @@ class Agent:
 
             if multimodal_user_parts:
                 print("🖼️  Presenting new multimodal information to the agent.")
-                multimodal_user_message = Message(role="user", parts=multimodal_user_message)
+                multimodal_user_message = Message(role="user", parts=multimodal_user_parts)
                 self.state.history.append(multimodal_user_message)

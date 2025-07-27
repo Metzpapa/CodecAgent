@@ -22,7 +22,6 @@ from state import State
 def check_api_key():
     """
     Checks if the necessary API key for the configured LLM provider is set.
-    Also validates S3 configuration if OpenAI is the provider.
     """
     provider = os.getenv("LLM_PROVIDER", "gemini").lower()
 
@@ -37,18 +36,9 @@ def check_api_key():
             print("Please add it to your .env file.")
             sys.exit(1)
         
-        # If any S3 var is set, assume user intends to use it and check all.
-        s3_keys = ["S3_ENDPOINT_URL", "S3_ACCESS_KEY_ID", "S3_SECRET_ACCESS_KEY", "S3_BUCKET_NAME", "S3_PUBLIC_URL_BASE"]
-        if any(os.getenv(k) for k in s3_keys):
-            print("S3 environment variables detected. Validating...")
-            missing_keys = []
-            for key in s3_keys:
-                if not os.getenv(key):
-                    missing_keys.append(key)
-            if missing_keys:
-                print(f"❌ Error: LLM_PROVIDER is 'openai' and S3 is partially configured. Missing: {', '.join(missing_keys)}")
-                print("Please add all required S3 variables to your .env file or remove them to use base64 fallback.")
-                sys.exit(1)
+        # --- MODIFIED: Removed S3 validation logic ---
+        # The new OpenAIResponsesAPIConnector uses the OpenAI Files API, so S3 is no longer needed.
+        # The S3-related environment variable checks have been removed.
 
     else:
         print(f"❌ Error: Unsupported LLM_PROVIDER '{provider}'. Please use 'gemini' or 'openai'.")
@@ -109,7 +99,7 @@ def main():
     """The main entry point and orchestration logic for the application."""
     # --- One-Time Setup ---
     load_dotenv()
-    check_api_key() # This function is now provider-aware and S3-aware
+    check_api_key() # This function is now provider-aware
     print_startup_screen()
 
     assets_directory_input = get_assets_directory()
@@ -147,7 +137,7 @@ def main():
                     # We call the delete_file method on the agent's connector,
                     # passing the provider-specific ID from our generic FileObject.
                     video_agent.connector.delete_file(file_id=f.id)
-                    # The connector's implementation handles the specifics (S3, Gemini API, or no-op).
+                    # The connector's implementation handles the specifics (OpenAI Files API, Gemini API, or no-op).
                 except Exception as e:
                     # Log if a specific file fails to delete, but continue trying others
                     print(f"  - Failed to delete {f.id}: {e}")

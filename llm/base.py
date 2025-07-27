@@ -1,7 +1,7 @@
 # codec/llm/base.py
 
 from abc import ABC, abstractmethod
-from typing import List, Any, TYPE_CHECKING
+from typing import List, Any, TYPE_CHECKING, Optional
 
 # Import our new generic types
 from .types import Message, LLMResponse, FileObject
@@ -49,7 +49,8 @@ class LLMConnector(ABC):
         self,
         history: List[Message],
         tools: List['BaseTool'],
-        system_prompt: str
+        system_prompt: str,
+        last_response_id: Optional[str]
     ) -> LLMResponse:
         """
         Sends a request to the LLM and gets a response.
@@ -61,6 +62,8 @@ class LLMConnector(ABC):
             history: A list of generic `Message` objects representing the conversation history.
             tools: A list of `BaseTool` instances available for the model to call.
             system_prompt: The system prompt to guide the model's behavior.
+            last_response_id: The ID of the previous response, for use by stateful APIs.
+                              Stateless APIs can ignore this.
 
         Returns:
             A generic `LLMResponse` object containing the model's reply and metadata.
