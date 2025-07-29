@@ -1,15 +1,13 @@
 # codec/state.py
-from typing import List, Optional, Literal, Tuple
+from typing import List, Optional, Literal, Tuple, Dict, Any
 from pydantic import BaseModel, Field
-
-from llm.types import Message, FileObject
 
 
 class TimelineClip(BaseModel):
     """
     Represents a single clip placed on the main timeline, analogous to a clip
     in a non-linear editor (NLE).
-    (This class remains unchanged as it's part of the internal editing logic.)
+    (This class is part of the core editing logic and remains unchanged.)
     """
     clip_id: str
     source_path: str
@@ -45,20 +43,32 @@ class State:
     Manages the state of the video editing agent session.
 
     This class acts as the agent's "memory," holding all contextual information
-    and providing a clean API for timeline manipulation.
+    and providing a clean API for timeline manipulation. It has been simplified
+    to use native Python types for conversation history and file tracking.
     """
 
     def __init__(self, assets_directory: str):
         self.assets_directory: str = assets_directory
-        self.history: List[Message] = []
+        
+        # --- MODIFIED: Use native types instead of custom Pydantic models ---
+        # The history is now a list of OpenAI-native message dictionaries.
+        self.history: List[Dict[str, Any]] = []
+        # We only need to store the file IDs for cleanup, not the whole object.
+        self.uploaded_files: List[str] = []
+        
         self.timeline: List[TimelineClip] = []
-        self.uploaded_files: List[FileObject] = []
         self.frame_rate: Optional[float] = None
         self.width: Optional[int] = None
         self.height: Optional[int] = None
         self.initial_prompt: Optional[str] = None
-        # --- MODIFIED: Add a field to track the conversation for stateful APIs ---
+        
+        # This ID is the key to stateful conversations with the OpenAI Responses API.
         self.last_response_id: Optional[str] = None
+
+        # --- NEW: A temporary list for agent-tool communication ---
+        # Tools that generate multimodal output will add file IDs here. The agent
+        # will then use this list to construct the next user message for the API.
+        self.new_file_ids_for_model: List[str] = []
 
     def _sort_timeline(self):
         """

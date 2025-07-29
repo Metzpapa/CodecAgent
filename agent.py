@@ -4,15 +4,14 @@ import os
 import inspect
 import pkgutil
 import importlib
-from typing import Dict, List, Tuple
+import json
 import pprint
 import sys
+from typing import Dict, List, Any
 
-# --- MODIFIED: Import all connectors and the base class ---
-from llm.base import LLMConnector
-from llm.gemini import GeminiConnector
-from llm.openairesponsesapi import OpenAIResponsesAPIConnector
-from llm.types import Message, ContentPart, ToolCall
+# --- MODIFIED: Direct OpenAI import, no more abstractions ---
+import openai
+from openai.types.responses import FunctionCall
 
 # Local imports
 import tools
@@ -32,36 +31,27 @@ Once you have enough media to make an edit finalize the edit and export it for t
 
 class Agent:
     """
-    The core AI agent responsible for orchestrating LLM calls and tool execution.
-    This class is now provider-agnostic and works with the LLMConnector interface.
+    The core AI agent, now simplified to work directly and statefully with the
+    OpenAI Responses API. All provider-agnostic abstractions have been removed
+    to increase prototyping velocity and reduce complexity.
     """
 
     def __init__(self, state: State):
         """
-        Initializes the agent, loading the appropriate LLM connector based on
-        environment variables, and discovering all available tools.
+        Initializes the agent, setting up the OpenAI client and loading all
+        available tools from the `tools` directory.
         """
         self.state = state
-
-        # --- Dynamically select the LLM connector ---
-        provider = os.getenv("LLM_PROVIDER", "gemini").lower()
-        self.connector: LLMConnector
-
-        if provider == "gemini":
-            print("🤖 Using Gemini provider (Stateless).")
-            api_key = os.environ.get("GEMINI_API_KEY")
-            model_name = os.environ.get("GEMINI_MODEL_NAME", "gemini-1.5-pro")
-            self.connector = GeminiConnector(api_key=api_key, model_name=model_name)
-        
-        elif provider == "openai":
-            print("🤖 Using OpenAI provider (Stateful Responses API).")
-            api_key = os.environ.get("OPENAI_API_KEY")
-            model_name = os.environ.get("OPENAI_MODEL_NAME", "gpt-4.1-mini")
-            self.connector = OpenAIResponsesAPIConnector(api_key=api_key, model_name=model_name)
-        
-        else:
-            print(f"❌ Error: Unsupported LLM_PROVIDER '{provider}'. Please use 'gemini' or 'openai'.")
+        api_key = os.environ.get("OPENAI_API_KEY")
+        if not api_key:
+            print("❌ Error: OPENAI_API_KEY is not set. Please add it to your .env file.")
             sys.exit(1)
+
+        # --- MODIFIED: Directly initialize the OpenAI client ---
+        # No more provider switching logic. We are all-in on OpenAI.
+        print("🤖 Using OpenAI Responses API (Stateful).")
+        self.client = openai.OpenAI(api_key=api_key)
+        self.model_name = os.environ.get("OPENAI_MODEL_NAME", "gpt-4.1-mini")
 
         print("Loading tools...")
         self.tools = self._load_tools()
@@ -69,12 +59,10 @@ class Agent:
 
     def _load_tools(self) -> Dict[str, BaseTool]:
         """
-        Dynamically discovers and loads all tool classes from the `tools` directory,
-        filtering them based on the active LLM provider.
+        Dynamically discovers and loads all tool classes from the `tools` directory.
+        The provider-specific filter has been removed as we only support OpenAI now.
         """
         loaded_tools = {}
-        provider = os.getenv("LLM_PROVIDER", "gemini").lower()
-
         for _, module_name, _ in pkgutil.iter_modules(tools.__path__, tools.__name__ + "."):
             if module_name.endswith(".base"):
                 continue
@@ -83,119 +71,124 @@ class Agent:
             for _, cls in inspect.getmembers(module, inspect.isclass):
                 if issubclass(cls, BaseTool) and cls is not BaseTool:
                     tool_instance = cls()
-                    
-                    if tool_instance.supported_providers is not None:
-                        if provider not in tool_instance.supported_providers:
-                            print(f"  - Skipping tool '{tool_instance.name}' (not supported by '{provider}' provider).")
-                            continue
-                    
                     loaded_tools[tool_instance.name] = tool_instance
         return loaded_tools
 
+    def _tool_to_openai_tool(self, tool: BaseTool) -> Dict[str, Any]:
+        """
+        Converts one of our BaseTool instances into the dictionary format
+        required by the OpenAI Responses API.
+        """
+        schema = tool.args_schema.model_json_schema()
+        # The 'title' field is not expected by the OpenAI API, so we remove it.
+        schema.pop('title', None)
+        return {
+            "type": "function",
+            "name": tool.name,
+            "description": tool.description,
+            "parameters": schema,
+        }
+
     def run(self, prompt: str):
         """
-        Starts the agent's execution loop for a single turn of conversation.
+        Starts and manages the agent's execution loop for a user's request.
+        This loop handles the stateful, multi-step conversation with the
+        OpenAI API, including all necessary tool calls.
         """
         print("\n--- User Prompt ---")
         print(prompt)
         print("-------------------\n")
 
-        user_message = Message(role="user", parts=[ContentPart(type='text', text=prompt)])
-        self.state.history.append(user_message)
-
         if self.state.initial_prompt is None:
             self.state.initial_prompt = prompt
 
+        # For the first turn, the input is just the user's prompt.
+        current_api_input: List[Dict[str, Any]] = [{"role": "user", "content": [{"type": "input_text", "text": prompt}]}]
+        self.state.history.extend(current_api_input)
+
+        # This loop handles a sequence of tool calls within a single user request.
         while True:
             final_system_prompt = SYSTEM_PROMPT_TEMPLATE.format(
                 user_request=self.state.initial_prompt
             )
 
-            # --- MODIFIED: Pass the last response ID to the connector ---
-            # A stateful connector will use this ID; a stateless one will ignore it.
-            response = self.connector.generate_content(
-                history=self.state.history,
-                tools=list(self.tools.values()),
-                system_prompt=final_system_prompt,
-                last_response_id=self.state.last_response_id
-            )
-
-            if response.is_blocked or not response.message:
-                print(f"❌ Response was blocked or empty. Reason: {response.finish_reason}")
-                print("   --- Raw API Response for Debugging ---")
-                pprint.pprint(response.raw_response)
-                print("   --------------------------------------")
-                if response.finish_reason in ["SAFETY", "BLOCKLIST", "API_ERROR"]:
-                    self.state.history.pop()
+            print(f"Sending request to OpenAI... (Previous ID: {self.state.last_response_id})")
+            
+            try:
+                response = self.client.responses.create(
+                    model=self.model_name,
+                    input=current_api_input,
+                    tools=[self._tool_to_openai_tool(t) for t in self.tools.values()],
+                    instructions=final_system_prompt,
+                    previous_response_id=self.state.last_response_id,
+                )
+            except openai.APIError as e:
+                print(f"❌ OpenAI API Error: {e}")
+                pprint.pprint(e.response.json())
                 break
 
-            # --- MODIFIED: Update state with the new response ID for the next turn ---
-            # This is the key for maintaining a stateful conversation.
-            if response.id:
-                self.state.last_response_id = response.id
+            # Save the ID of this response to use in the next call.
+            self.state.last_response_id = response.id
+            
+            # Add the raw response output to our local history for context and debugging.
+            self.state.history.extend([item.to_dict() for item in response.output])
 
-            model_message = response.message
-            self.state.history.append(model_message)
+            # Extract text and tool calls from the response output
+            text_outputs = [
+                "".join([c.text for c in item.content if hasattr(c, 'text')])
+                for item in response.output if item.type == 'message'
+            ]
+            tool_calls: List[FunctionCall] = [item for item in response.output if item.type == 'function_call']
 
-            text_parts = []
-            tool_calls: List[ToolCall] = []
-            for part in model_message.parts:
-                if part.type == 'text' and part.text:
-                    text_parts.append(part.text)
-                elif part.type == 'tool_call' and part.tool_call:
-                    tool_calls.append(part.tool_call)
-
-            if text_parts:
-                full_text = "\n".join(text_parts)
+            if text_outputs:
+                full_text = "\n".join(text_outputs)
                 print(f"\n🤖 Agent says: {full_text}")
                 print("------------------------")
 
             if not tool_calls:
                 print("\n✅ Agent has finished its turn.")
-                break
+                break # Exit the tool-calling loop for this user request.
 
-            standard_tool_results: List[ContentPart] = []
-            multimodal_user_parts: List[ContentPart] = []
+            # --- Execute Tools and Prepare for Next API Call ---
+            tool_outputs_for_api = []
+            # Clear any multimodal data from the previous tool call cycle.
+            self.state.new_file_ids_for_model = []
 
             for call in tool_calls:
-                print(f"🤖 Agent wants to call tool: {call.name}({call.args})")
+                print(f"🤖 Agent wants to call tool: {call.name}({call.arguments})")
                 tool_to_execute = self.tools.get(call.name)
+                tool_output_string = f"Error: Tool '{call.name}' not found."
 
-                tool_output = None
-                if not tool_to_execute:
-                    tool_output = f"Error: Tool '{call.name}' not found."
-                else:
+                if tool_to_execute:
                     try:
-                        validated_args = tool_to_execute.args_schema(**call.args)
-                        tool_output = tool_to_execute.execute(self.state, validated_args, self.connector)
+                        # The arguments are a JSON string, so we parse them.
+                        parsed_args = json.loads(call.arguments)
+                        validated_args = tool_to_execute.args_schema(**parsed_args)
+                        # Pass the OpenAI client directly to tools that need it (e.g., for file uploads)
+                        # The tool now returns a simple string and modifies state for multimodal output.
+                        tool_output_string = tool_to_execute.execute(self.state, validated_args, self.client)
                     except Exception as e:
-                        tool_output = f"Error executing tool '{call.name}': {e}"
+                        tool_output_string = f"Error executing tool '{call.name}': {e}"
 
-                if isinstance(tool_output, str):
-                    print(f"🛠️ Tool Result:\n{tool_output}\n")
-                    standard_tool_results.append(ContentPart(
-                        type='tool_result',
-                        tool_call_id=call.id,
-                        tool_name=call.name,
-                        text=tool_output
-                    ))
-                elif isinstance(tool_output, tuple):
-                    confirmation_string, new_multimodal_parts = tool_output
-                    print(f"🛠️ Tool Result:\n{confirmation_string}\n")
-                    
-                    standard_tool_results.append(ContentPart(
-                        type='tool_result',
-                        tool_call_id=call.id,
-                        tool_name=call.name,
-                        text=confirmation_string
-                    ))
-                    multimodal_user_parts.extend(new_multimodal_parts)
+                print(f"🛠️ Tool Result:\n{tool_output_string}\n")
+                tool_outputs_for_api.append({
+                    "type": "function_call_output",
+                    "call_id": call.call_id,
+                    "output": tool_output_string
+                })
 
-            if standard_tool_results:
-                tool_response_message = Message(role="tool", parts=standard_tool_results)
-                self.state.history.append(tool_response_message)
-
-            if multimodal_user_parts:
+            # The input for the next iteration of the loop starts with the tool results.
+            current_api_input = tool_outputs_for_api
+            
+            # If any tool generated new files for the model to see, we create a new 'user' message.
+            if self.state.new_file_ids_for_model:
                 print("🖼️  Presenting new multimodal information to the agent.")
-                multimodal_user_message = Message(role="user", parts=multimodal_user_parts)
-                self.state.history.append(multimodal_user_message)
+                multimodal_content = [
+                    {"type": "input_image", "file_id": file_id}
+                    for file_id in self.state.new_file_ids_for_model
+                ]
+                # This new user message is added to the list of inputs for the next API call.
+                current_api_input.append({"role": "user", "content": multimodal_content})
+
+            # Add the inputs for the next turn to our history log.
+            self.state.history.extend(current_api_input)

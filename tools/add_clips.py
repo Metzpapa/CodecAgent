@@ -2,6 +2,7 @@
 import os
 import math
 from typing import Literal, Optional, TYPE_CHECKING, List, Dict, Any, Tuple
+import openai
 from pydantic import BaseModel, Field
 from collections import defaultdict
 
@@ -12,7 +13,6 @@ from utils import hms_to_seconds, probe_media_file
 
 if TYPE_CHECKING:
     from state import State
-    from llm.base import LLMConnector
 
 
 class ClipToAdd(BaseModel):
@@ -203,7 +203,7 @@ class AddClipsTool(BaseTool):
             return None, f"An unexpected error occurred during validation: {e}"
 
     # --- MODIFIED: Updated execute signature ---
-    def execute(self, state: 'State', args: AddClipsArgs, connector: 'LLMConnector') -> str:
+    def execute(self, state: 'State', args: AddClipsArgs, client: openai.OpenAI) -> str:
         # --- PHASE 1: VALIDATION (ALL OR NOTHING) ---
         validated_clips: List[_ValidatedClipInfo] = []
         errors = []

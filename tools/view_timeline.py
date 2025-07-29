@@ -2,7 +2,8 @@
 
 import os
 import ffmpeg
-from typing import Optional, TYPE_CHECKING, Union, List, Tuple
+from typing import Optional, TYPE_CHECKING
+import openai
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import tempfile
 from pathlib import Path
@@ -11,14 +12,11 @@ from collections import defaultdict
 from pydantic import BaseModel, Field
 
 from .base import BaseTool
-from state import TimelineClip
 from utils import hms_to_seconds
-from llm.types import Message, ContentPart, FileObject
 
 # Use a forward reference for the State class to avoid circular imports.
 if TYPE_CHECKING:
     from state import State
-    from llm.base import LLMConnector
 
 
 class ViewTimelineArgs(BaseModel):
@@ -63,7 +61,7 @@ class ViewTimelineTool(BaseTool):
     def args_schema(self):
         return ViewTimelineArgs
 
-    def execute(self, state: 'State', args: ViewTimelineArgs, connector: 'LLMConnector') -> Union[str, Tuple[str, List[ContentPart]]]:
+    def execute(self, state: 'State', args: ViewTimelineArgs, client: openai.OpenAI) -> str:
         if not state.timeline:
             return "Error: The timeline is empty. Cannot view an empty timeline."
 
@@ -139,7 +137,7 @@ class ViewTimelineTool(BaseTool):
                         for i, task in enumerate(tasks_sorted_by_frame):
                             if i < len(extracted_files):
                                 display_name = f"timeline-frame-{task['clip'].clip_id}-{task['timeline_ts']:.2f}s"
-                                future = executor.submit(self._upload_file_from_path, extracted_files[i], display_name, connector)
+                                future = executor.submit(self._upload_file_from_path, extracted_files[i], display_name, client)
                                 future_to_ts[future] = task['timeline_ts']
 
                     except Exception as e:
@@ -153,47 +151,42 @@ class ViewTimelineTool(BaseTool):
                     except Exception as e:
                         upload_results[ts] = f"Upload failed: {e}"
 
-            # --- 5. MODIFIED: Assemble Chronological Response as a tuple ---
-            confirmation_text = (
-                f"Successfully extracted and displayed {len(timeline_timestamps)} frames sampled between {start_sec:.2f}s and {end_sec:.2f}s of the timeline. "
-                "The following content contains the visual information."
-            )
-            
-            multimodal_parts: List[ContentPart] = []
-
+            # --- 5. Process results and update state ---
+            successful_frames = 0
             for event in sorted(timeline_events, key=lambda x: x['timeline_ts']):
                 ts = event['timeline_ts']
                 clip = event.get('clip')
 
                 if not clip:
-                    multimodal_parts.append(ContentPart(type='text', text=f"Timeline at {ts:.3f}s: [GAP ON VIDEO TRACKS]"))
+                    print(f"Timeline at {ts:.3f}s: [GAP ON VIDEO TRACKS]")
                     continue
 
                 result = upload_results.get(ts)
                 track_name = f"V{clip.track_number}"
                 
-                if isinstance(result, FileObject):
-                    frame_file = result
-                    state.uploaded_files.append(frame_file)
-                    multimodal_parts.append(ContentPart(type='text', text=f"Timeline at {ts:.3f}s (from clip: '{clip.clip_id}' on track {track_name})"))
-                    multimodal_parts.append(ContentPart(type='image', file=frame_file))
+                if isinstance(result, str) and "Failed" not in result:
+                    file_id = result
+                    state.uploaded_files.append(file_id)
+                    state.new_file_ids_for_model.append(file_id)
+                    successful_frames += 1
+                    print(f"Timeline at {ts:.3f}s (from clip: '{clip.clip_id}' on track {track_name})")
                 else:
                     error_details = result or "Processing failed."
-                    multimodal_parts.append(ContentPart(
-                        type='text',
-                        text=f"SYSTEM: Could not process frame from clip '{clip.clip_id}' at timeline {ts:.3f}s. Error: {error_details}"
-                    ))
+                    print(f"  - Failed to process frame from clip '{clip.clip_id}' at timeline {ts:.3f}s: {error_details}")
             
-            return (confirmation_text, multimodal_parts)
+            if successful_frames == 0:
+                return f"Error: Failed to extract any frames from the timeline between {start_sec:.2f}s and {end_sec:.2f}s."
+            
+            return (
+                f"Successfully extracted and uploaded {successful_frames} frames sampled between {start_sec:.2f}s and {end_sec:.2f}s "
+                f"of the timeline. The agent can now view them."
+            )
 
-    def _upload_file_from_path(self, file_path: Path, display_name: str, connector: 'LLMConnector') -> Union[FileObject, str]:
+    def _upload_file_from_path(self, file_path: Path, display_name: str, client: openai.OpenAI) -> str:
         """Helper to upload a single file, intended for use in the executor."""
         try:
-            uploaded_file = connector.upload_file(
-                file_path=str(file_path),
-                display_name=display_name,
-                mime_type="image/jpeg"
-            )
-            return uploaded_file
+            with open(file_path, "rb") as f:
+                uploaded_file = client.files.create(file=f, purpose="vision")
+            return uploaded_file.id
         except Exception as e:
             return f"Failed to upload file. Details: {str(e)}"

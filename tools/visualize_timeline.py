@@ -3,7 +3,7 @@
 import os
 import math
 import tempfile
-from typing import Optional, TYPE_CHECKING, Union, List, Tuple, Dict
+from typing import Optional, TYPE_CHECKING, Dict, Tuple
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from collections import defaultdict
@@ -14,11 +14,10 @@ from PIL import Image, ImageDraw, ImageFont
 
 from .base import BaseTool
 from utils import hms_to_seconds
-from llm.types import ContentPart, FileObject
+import openai
 
 if TYPE_CHECKING:
     from state import State
-    from llm.base import LLMConnector
 
 
 class VisualizeTimelineArgs(BaseModel):
@@ -57,7 +56,7 @@ class VisualizeTimelineTool(BaseTool):
     def args_schema(self):
         return VisualizeTimelineArgs
 
-    def execute(self, state: 'State', args: VisualizeTimelineArgs, connector: 'LLMConnector') -> Union[str, Tuple[str, List[ContentPart]]]:
+    def execute(self, state: 'State', args: VisualizeTimelineArgs, client: openai.OpenAI) -> str:
         if not state.timeline:
             return "Error: The timeline is empty. Cannot visualize an empty timeline."
 
@@ -74,17 +73,14 @@ class VisualizeTimelineTool(BaseTool):
                 tmp_file_path = tmp_file.name
 
             print(f"Uploading timeline visualization from '{tmp_file_path}'...")
-            uploaded_file = connector.upload_file(
-                file_path=tmp_file_path,
-                display_name="timeline_visualization.jpg",
-                mime_type="image/jpeg"
-            )
-            state.uploaded_files.append(uploaded_file)
+            with open(tmp_file_path, "rb") as f:
+                uploaded_file = client.files.create(file=f, purpose="vision")
+            
+            file_id = uploaded_file.id
+            state.uploaded_files.append(file_id)
+            state.new_file_ids_for_model.append(file_id)
 
-            confirmation_text = "Successfully generated a visual representation of the timeline. The following image shows the current edit."
-            multimodal_parts = [ContentPart(type='image', file=uploaded_file)]
-
-            return (confirmation_text, multimodal_parts)
+            return "Successfully generated and uploaded a visual representation of the timeline. The agent can now view it."
 
         except Exception as e:
             print(f"Error during timeline visualization: {e}")

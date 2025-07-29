@@ -1,5 +1,6 @@
 import os
 from typing import List, TYPE_CHECKING
+import openai
 
 from pydantic import BaseModel, Field
 
@@ -9,7 +10,6 @@ from utils import probe_media_file
 # Use a forward reference for the State class to avoid circular imports.
 if TYPE_CHECKING:
     from state import State
-    from llm.base import LLMConnector
 
 
 class GetAssetInfoArgs(BaseModel):
@@ -38,7 +38,7 @@ class GetAssetInfoTool(BaseTool):
     def args_schema(self) -> type[BaseModel]:
         return GetAssetInfoArgs
 
-    def execute(self, state: 'State', args: GetAssetInfoArgs, connector: 'LLMConnector') -> str:
+    def execute(self, state: 'State', args: GetAssetInfoArgs, client: openai.OpenAI) -> str:
         """
         Probes each requested file using the centralized utility to extract and format its metadata.
         """

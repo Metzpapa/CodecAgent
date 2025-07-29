@@ -1,25 +1,21 @@
 # codec/tools/extract_raw_timeline_audio.py
 
 import os
-from typing import Optional, TYPE_CHECKING, Union, List, Tuple
+from typing import Optional, TYPE_CHECKING
+import openai
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import tempfile
-from pathlib import Path
 
-import ffmpeg
 from pydantic import BaseModel, Field
 
 from .base import BaseTool
-from state import TimelineClip
 # --- MODIFIED: Update the import to point to the newly renamed file ---
 from .extract_raw_audio import _extract_and_upload_audio_segment # REUSING THE HELPER
 from utils import hms_to_seconds
-from llm.types import Message, ContentPart, FileObject
 
 # Use a forward reference for the State class to avoid circular imports.
 if TYPE_CHECKING:
     from state import State
-    from llm.base import LLMConnector
 
 
 # --- MODIFIED: Rename the arguments class ---
@@ -69,7 +65,7 @@ class ExtractRawTimelineAudioTool(BaseTool):
         # --- MODIFIED: Return the renamed arguments class ---
         return ExtractRawTimelineAudioArgs
 
-    def execute(self, state: 'State', args: ExtractRawTimelineAudioArgs, connector: 'LLMConnector') -> Union[str, Tuple[str, List[ContentPart]]]:
+    def execute(self, state: 'State', args: ExtractRawTimelineAudioArgs, client: openai.OpenAI) -> str:
         if not state.timeline:
             return "Error: The timeline is empty. Cannot extract audio from an empty timeline."
 
@@ -121,7 +117,7 @@ class ExtractRawTimelineAudioTool(BaseTool):
                         task['source_start_ts'],
                         task['duration'],
                         f"timeline-audio-{task['clip'].clip_id}",
-                        connector,
+                        client,
                         tmpdir
                     ): task['clip']
                     for task in tasks_to_process
@@ -135,28 +131,25 @@ class ExtractRawTimelineAudioTool(BaseTool):
                     except Exception as e:
                         upload_results.append((clip, f"Unexpected system error: {e}"))
 
-            # --- 3. Assemble Response as a tuple ---
+            # --- 3. Process results and update state ---
             upload_results.sort(key=lambda x: x[0].timeline_start_sec) # Sort by timeline start time
             
-            confirmation_text = (
-                f"Successfully extracted raw audio for {len(upload_results)} clips found on audio tracks between {start_sec:.2f}s and {end_sec:.2f}s of the timeline. "
-                "The following content contains the audio information."
-            )
-            
-            multimodal_parts: List[ContentPart] = []
-            
+            successful_clips = 0
             for clip, result in upload_results:
                 track_name = f"A{clip.track_number}"
-                if isinstance(result, FileObject):
-                    audio_file = result
-                    state.uploaded_files.append(audio_file)
-                    multimodal_parts.append(ContentPart(type='text', text=f"Audio from clip: '{clip.clip_id}' on track {track_name} (starts on timeline at {clip.timeline_start_sec:.3f}s)"))
-                    multimodal_parts.append(ContentPart(type='audio', file=audio_file))
-                else: # It's an error string
-                    error_details = result
-                    multimodal_parts.append(ContentPart(
-                        type='text',
-                        text=f"SYSTEM: Could not process audio for clip '{clip.clip_id}' on track {track_name}. Error: {error_details}"
-                    ))
+                if "Unexpected system error" not in str(result):
+                    file_id = result
+                    state.uploaded_files.append(file_id)
+                    state.new_file_ids_for_model.append(file_id)
+                    successful_clips += 1
+                    print(f"  - Processed audio from clip '{clip.clip_id}' on track {track_name}")
+                else:
+                    print(f"  - Failed to process audio for clip '{clip.clip_id}' on track {track_name}: {result}")
             
-            return (confirmation_text, multimodal_parts)
+            if successful_clips == 0:
+                return f"Error: Failed to extract audio from any clips between {start_sec:.2f}s and {end_sec:.2f}s."
+            
+            return (
+                f"Successfully extracted and uploaded raw audio for {successful_clips} clips found on audio tracks "
+                f"between {start_sec:.2f}s and {end_sec:.2f}s of the timeline. The agent can now process them."
+            )

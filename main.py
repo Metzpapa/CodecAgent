@@ -21,27 +21,11 @@ from state import State
 
 def check_api_key():
     """
-    Checks if the necessary API key for the configured LLM provider is set.
+    Checks if the necessary OpenAI API key is set.
     """
-    provider = os.getenv("LLM_PROVIDER", "gemini").lower()
-
-    if provider == "gemini":
-        if not os.getenv("GEMINI_API_KEY"):
-            print("❌ Error: LLM_PROVIDER is set to 'gemini' but GEMINI_API_KEY is not set.")
-            print("Please add it to your .env file.")
-            sys.exit(1)
-    elif provider == "openai":
-        if not os.getenv("OPENAI_API_KEY"):
-            print("❌ Error: LLM_PROVIDER is set to 'openai' but OPENAI_API_KEY is not set.")
-            print("Please add it to your .env file.")
-            sys.exit(1)
-        
-        # --- MODIFIED: Removed S3 validation logic ---
-        # The new OpenAIResponsesAPIConnector uses the OpenAI Files API, so S3 is no longer needed.
-        # The S3-related environment variable checks have been removed.
-
-    else:
-        print(f"❌ Error: Unsupported LLM_PROVIDER '{provider}'. Please use 'gemini' or 'openai'.")
+    if not os.getenv("OPENAI_API_KEY"):
+        print("❌ Error: OPENAI_API_KEY is not set.")
+        print("Please add it to your .env file.")
         sys.exit(1)
 
 
@@ -127,20 +111,18 @@ def main():
             prompt = input("\n➡️  You: ").strip()
 
     finally:
-        # The cleanup block now uses the generic connector, which works for all providers.
         print("\nCleaning up session resources...")
         if session_state.uploaded_files:
             print(f"Deleting {len(session_state.uploaded_files)} uploaded files...")
-            # `f` is our generic FileObject from llm.types
-            for f in session_state.uploaded_files:
+            # session_state.uploaded_files is now a simple list of file ID strings.
+            for file_id in session_state.uploaded_files:
                 try:
-                    # We call the delete_file method on the agent's connector,
-                    # passing the provider-specific ID from our generic FileObject.
-                    video_agent.connector.delete_file(file_id=f.id)
-                    # The connector's implementation handles the specifics (OpenAI Files API, Gemini API, or no-op).
+                    # We make a direct, simple call to the OpenAI client.
+                    print(f"  - Deleting OpenAI file: {file_id}")
+                    video_agent.client.files.delete(file_id=file_id)
                 except Exception as e:
                     # Log if a specific file fails to delete, but continue trying others
-                    print(f"  - Failed to delete {f.id}: {e}")
+                    print(f"  - Failed to delete {file_id}: {e}")
         else:
             print("No uploaded files to clean up.")
         

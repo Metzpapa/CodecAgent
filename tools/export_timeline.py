@@ -4,6 +4,7 @@ import os
 import shutil
 from pathlib import Path
 from typing import TYPE_CHECKING, Dict, List, Tuple, Optional
+import openai
 from collections import defaultdict
 import datetime
 
@@ -16,7 +17,6 @@ from state import TimelineClip
 # Use a forward reference for the State class to avoid circular imports.
 if TYPE_CHECKING:
     from state import State
-    from llm.base import LLMConnector
 
 
 class ExportTimelineArgs(BaseModel):
@@ -50,7 +50,7 @@ class ExportTimelineTool(BaseTool):
     def args_schema(self):
         return ExportTimelineArgs
 
-    def execute(self, state: 'State', args: ExportTimelineArgs, connector: 'LLMConnector') -> str:
+    def execute(self, state: 'State', args: ExportTimelineArgs, client: openai.OpenAI) -> str:
         if not state.timeline:
             return "Error: The timeline is empty. Please add some clips before exporting."
 

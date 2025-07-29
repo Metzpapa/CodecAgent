@@ -10,7 +10,7 @@ from pathlib import Path
 from pydantic import BaseModel, Field
 
 # --- MODIFIED: Import our new generic types ---
-from llm.types import Message, ContentPart, FileObject
+import openai
 
 from .base import BaseTool
 from utils import hms_to_seconds, probe_media_file
@@ -18,16 +18,15 @@ from utils import hms_to_seconds, probe_media_file
 # --- MODIFIED: Update TYPE_CHECKING imports for the new interface ---
 if TYPE_CHECKING:
     from state import State
-    from llm.base import LLMConnector
 
 
 def _extract_and_upload_frame(
     file_path: Union[str, Path],
     timestamp_sec: float,
     display_name: str,
-    connector: 'LLMConnector',
+    client: openai.OpenAI,
     tmpdir: str
-) -> Union[FileObject, str]:
+) -> str:
     """
     Core reusable logic to extract a single frame from a video file, save it
     temporarily, and upload it using the provided LLM connector.
@@ -41,20 +40,17 @@ def _extract_and_upload_frame(
             .run(capture_stdout=True, capture_stderr=True, overwrite_output=True)
         )
 
-        # 2. Upload the extracted frame using the connector
+        # 2. Upload the extracted frame using the OpenAI client
         print(f"Uploading frame from '{display_name}' at {timestamp_sec:.3f}s...")
-        uploaded_file_obj = connector.upload_file(
-            file_path=str(output_path),
-            mime_type="image/jpeg",
-            display_name=display_name
-        )
-        print(f"Upload complete for '{display_name}'. ID: {uploaded_file_obj.id}")
-        return uploaded_file_obj
+        with open(output_path, "rb") as f:
+            uploaded_file = client.files.create(file=f, purpose="vision")
+        print(f"Upload complete for '{display_name}'. ID: {uploaded_file.id}")
+        return uploaded_file.id
 
     except Exception as e:
         error_msg = f"Failed to extract or upload frame for '{display_name}' at {timestamp_sec:.3f}s. Details: {e}"
         print(error_msg)
-        return error_msg
+        raise IOError(error_msg) from e
 
 
 class ViewVideoArgs(BaseModel):
@@ -104,7 +100,7 @@ class ViewVideoTool(BaseTool):
         return ViewVideoArgs
 
     # --- MODIFIED: The execute method signature and return type are updated ---
-    def execute(self, state: 'State', args: ViewVideoArgs, connector: 'LLMConnector') -> Union[str, Tuple[str, List[ContentPart]]]:
+    def execute(self, state: 'State', args: ViewVideoArgs, client: openai.OpenAI) -> str:
         # --- 1. Validation & Setup (No changes needed here) ---
         full_path = os.path.join(state.assets_directory, args.source_filename)
         if not os.path.exists(full_path):
@@ -157,7 +153,7 @@ class ViewVideoTool(BaseTool):
                         full_path,
                         ts,
                         f"frame-{args.source_filename}-{ts:.2f}s",
-                        connector,
+                        client,
                         tmpdir
                     ): ts
                     for ts in timestamps
@@ -171,30 +167,27 @@ class ViewVideoTool(BaseTool):
                     except Exception as e:
                         upload_results.append((ts, f"An unexpected system error during upload: {e}"))
 
-            # --- 4. MODIFIED: Assemble response as a tuple ---
+            # --- 4. Process results and update state ---
             upload_results.sort(key=lambda x: x[0])
-
-            confirmation_text = (
-                f"Successfully extracted and uploaded {len(upload_results)} frames from '{args.source_filename}' "
-                f"between {start_sec:.2f}s and {end_sec:.2f}s. The following content contains the visual information."
-            )
             
-            multimodal_parts: List[ContentPart] = []
-            for ts, result in upload_results:
-                if isinstance(result, FileObject):
-                    frame_file_obj = result
-                    state.uploaded_files.append(frame_file_obj)
-                    multimodal_parts.append(ContentPart(type='text', text=f"Frame at: {ts:.3f}s"))
-                    multimodal_parts.append(ContentPart(
-                        type='image',
-                        file=frame_file_obj
-                    ))
+            successful_uploads = 0
+            for ts, result_or_error in upload_results:
+                # The result is now either a file_id string or an error string
+                if "unexpected system error" not in str(result_or_error):
+                    file_id = result_or_error
+                    # Add to state for cleanup
+                    state.uploaded_files.append(file_id)
+                    # Add to state for the agent to use in the next API call
+                    state.new_file_ids_for_model.append(file_id)
+                    successful_uploads += 1
                 else:
-                    error_details = result
-                    multimodal_parts.append(ContentPart(
-                        type='text',
-                        text=f"SYSTEM: Could not process frame at {ts:.3f}s. Error: {error_details}"
-                    ))
+                    print(f"  - Failed to process frame at {ts:.3f}s: {result_or_error}")
 
-            # Return a tuple: (confirmation_string, list_of_multimodal_parts)
-            return (confirmation_text, multimodal_parts)
+            if successful_uploads == 0:
+                return f"Error: Failed to extract or upload any frames from '{args.source_filename}'."
+
+            # Return a simple confirmation string. The agent will handle the multimodal part.
+            return (
+                f"Successfully extracted and uploaded {successful_uploads} frames from '{args.source_filename}' "
+                f"between {start_sec:.2f}s and {end_sec:.2f}s. The agent can now view them."
+            )

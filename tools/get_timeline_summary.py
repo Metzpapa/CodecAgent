@@ -2,6 +2,7 @@
 
 import os
 from typing import Optional, TYPE_CHECKING, Tuple
+import openai
 from collections import defaultdict
 
 from pydantic import BaseModel, Field
@@ -12,7 +13,6 @@ from utils import hms_to_seconds
 # Use a forward reference for the State class to avoid circular imports.
 if TYPE_CHECKING:
     from state import State
-    from llm.base import LLMConnector
 
 
 class GetTimelineSummaryArgs(BaseModel):
@@ -51,7 +51,7 @@ class GetTimelineSummaryTool(BaseTool):
     def args_schema(self):
         return GetTimelineSummaryArgs
 
-    def execute(self, state: 'State', args: GetTimelineSummaryArgs, connector: 'LLMConnector') -> str:
+    def execute(self, state: 'State', args: GetTimelineSummaryArgs, client: openai.OpenAI) -> str:
         if not state.timeline:
             return "Timeline is currently empty."
 

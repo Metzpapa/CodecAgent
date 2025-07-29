@@ -3,12 +3,12 @@
 import os
 # --- MODIFIED: Update TYPE_CHECKING imports for the new interface ---
 from typing import TYPE_CHECKING
+import openai
 
 from tools.base import BaseTool, NoOpArgs
 
 if TYPE_CHECKING:
     from state import State
-    from llm.base import LLMConnector
 
 
 class ListAssetsTool(BaseTool):
@@ -25,7 +25,7 @@ class ListAssetsTool(BaseTool):
     @property
     def args_schema(self):
         return NoOpArgs
-    def execute(self, state: 'State', args: NoOpArgs, connector: 'LLMConnector') -> str:
+    def execute(self, state: 'State', args: NoOpArgs, client: openai.OpenAI) -> str:
         """
         Scans the assets directory and all its subdirectories, returning a
         list of all found files, ignoring hidden system files.

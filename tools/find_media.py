@@ -12,12 +12,11 @@ from typing import Literal, Optional, Tuple, TYPE_CHECKING, Union, List, Dict, A
 from pydantic import BaseModel, Field
 
 from .base import BaseTool
-from llm.types import ContentPart, FileObject
+import openai
 from utils import hms_to_seconds
 
 if TYPE_CHECKING:
     from state import State
-    from llm.base import LLMConnector
 
 # --- Pydantic Models ---
 
@@ -89,14 +88,14 @@ class FindMediaTool(BaseTool):
     def args_schema(self):
         return FindMediaArgs
 
-    def execute(self, state: 'State', args: FindMediaArgs, connector: 'LLMConnector') -> Union[str, Tuple[str, List[ContentPart]]]:
+    def execute(self, state: 'State', args: FindMediaArgs, client: openai.OpenAI) -> str:
         try:
             if args.mode == "download":
                 return self._execute_download(state, args)
             elif args.mode == "search_only":
                 return self._execute_search_only(args)
             elif args.mode == "preview":
-                return self._execute_preview(args, connector, state)
+                return self._execute_preview(args, client, state)
             else:
                 return f"Error: Unknown mode '{args.mode}'."
         except Exception as e:
@@ -199,7 +198,7 @@ class FindMediaTool(BaseTool):
         
         return json.dumps(search_results, indent=2)
 
-    def _execute_preview(self, args: FindMediaArgs, connector: 'LLMConnector', state: 'State') -> Tuple[str, List[ContentPart]]:
+    def _execute_preview(self, args: FindMediaArgs, client: openai.OpenAI, state: 'State') -> str:
         print(f"Generating preview for query: '{args.query}'")
         
         ydl_opts = {
@@ -237,11 +236,11 @@ class FindMediaTool(BaseTool):
                 "job_ids": job_ids_for_this_result
             })
 
-        uploaded_frames: Dict[str, Union[FileObject, str]] = {}
+        uploaded_frames: Dict[str, str] = {}
         with tempfile.TemporaryDirectory() as tmpdir:
             with ThreadPoolExecutor(max_workers=8) as executor:
                 future_to_job = {
-                    executor.submit(self._extract_and_upload_frame_from_url, job, connector, tmpdir): job
+                    executor.submit(self._extract_and_upload_frame_from_url, job, client, tmpdir): job
                     for job in frame_jobs
                 }
                 for future in as_completed(future_to_job):
@@ -251,29 +250,29 @@ class FindMediaTool(BaseTool):
                     except Exception as e:
                         uploaded_frames[job['id']] = f"System error during frame processing: {e}"
 
-        multimodal_parts: List[ContentPart] = []
+        successful_frames = 0
         for i, result_data in enumerate(results_with_jobs):
             entry = result_data['metadata']
-            header_text = (
-                f"--- Preview for Result {i+1} ---\n"
-                f"Title: {entry.get('title', 'N/A')}\n"
-                f"URL: {entry.get('url', 'N/A')}\n"
-                f"Duration: {entry.get('duration_string', 'N/A')}\n"
-                f"Channel: {entry.get('channel', 'N/A')}"
-            )
-            multimodal_parts.append(ContentPart(type='text', text=header_text))
+            print(f"--- Preview for Result {i+1} ---")
+            print(f"Title: {entry.get('title', 'N/A')}")
+            print(f"URL: {entry.get('url', 'N/A')}")
+            print(f"Duration: {entry.get('duration_string', 'N/A')}")
+            print(f"Channel: {entry.get('channel', 'N/A')}")
 
             for job_id in result_data['job_ids']:
                 result = uploaded_frames.get(job_id)
-                if isinstance(result, FileObject):
-                    state.uploaded_files.append(result)
-                    multimodal_parts.append(ContentPart(type='image', file=result))
+                if result and "System error" not in result:
+                    file_id = result
+                    state.uploaded_files.append(file_id)
+                    state.new_file_ids_for_model.append(file_id)
+                    successful_frames += 1
                 else:
-                    error_text = f"SYSTEM: Could not generate preview frame. Error: {result or 'Unknown'}"
-                    multimodal_parts.append(ContentPart(type='text', text=error_text))
+                    print(f"  - Failed to generate frame: {result or 'Unknown error'}")
 
-        confirmation_text = f"Successfully generated a visual preview for {len(results_with_jobs)} search results. The following content contains the previews."
-        return (confirmation_text, multimodal_parts)
+        if successful_frames == 0:
+            return "Error: Failed to generate any preview frames for the search results."
+
+        return f"Successfully generated and uploaded {successful_frames} preview frames from {len(results_with_jobs)} search results. The agent can now view them."
 
     # --- Private Helpers ---
 
@@ -293,9 +292,9 @@ class FindMediaTool(BaseTool):
     def _extract_and_upload_frame_from_url(
         self,
         job: Dict[str, Any],
-        connector: 'LLMConnector',
+        client: openai.OpenAI,
         tmpdir: str
-    ) -> Union[FileObject, str]:
+    ) -> str:
         output_path = Path(tmpdir) / f"{job['id']}.jpg"
         try:
             (
@@ -305,18 +304,15 @@ class FindMediaTool(BaseTool):
             )
 
             print(f"Uploading frame: {job['display_name']}")
-            uploaded_file_obj = connector.upload_file(
-                file_path=str(output_path),
-                mime_type="image/jpeg",
-                display_name=job['display_name']
-            )
-            return uploaded_file_obj
+            with open(output_path, "rb") as f:
+                uploaded_file = client.files.create(file=f, purpose="vision")
+            return uploaded_file.id
 
         except ffmpeg.Error as e:
             error_msg = f"FFmpeg failed to extract frame. Stderr: {e.stderr.decode()}"
             print(error_msg)
-            return error_msg
+            raise IOError(error_msg) from e
         except Exception as e:
             error_msg = f"Failed to extract or upload frame. Details: {e}"
             print(error_msg)
-            return error_msg
+            raise IOError(error_msg) from e

@@ -2,19 +2,18 @@
 
 import os
 import tempfile
-from typing import Optional, TYPE_CHECKING, Union, Tuple, List
+from typing import Optional, TYPE_CHECKING, List
 from pathlib import Path
 
 import ffmpeg
 from pydantic import BaseModel, Field
 from .base import BaseTool
 from utils import hms_to_seconds, probe_media_file
-from llm.types import Message, ContentPart, FileObject
+import openai
 
 # Use a forward reference for the State class to avoid circular imports.
 if TYPE_CHECKING:
     from state import State
-    from llm.base import LLMConnector
 
 
 def _extract_and_upload_audio_segment(
@@ -22,9 +21,9 @@ def _extract_and_upload_audio_segment(
     start_sec: float,
     duration_sec: float,
     display_name: str,
-    connector: 'LLMConnector',
+    client: openai.OpenAI,
     tmpdir: str
-) -> Union[FileObject, str]:
+) -> str:
     """
     Core reusable logic to extract an audio segment from a media file, save it
     temporarily, and upload it to the LLM provider.
@@ -49,20 +48,17 @@ def _extract_and_upload_audio_segment(
             .run(capture_stdout=True, capture_stderr=True, overwrite_output=True)
         )
 
-        # 2. Upload the extracted audio
+        # 2. Upload the extracted audio using the OpenAI client
         print(f"Uploading audio from '{display_name}' (duration: {duration_sec:.2f}s)...")
-        audio_file_obj = connector.upload_file(
-            file_path=str(output_path),
-            display_name=display_name,
-            mime_type="audio/mpeg"
-        )
-        print(f"Upload complete for '{display_name}'. ID: {audio_file_obj.id}")
-        return audio_file_obj
+        with open(output_path, "rb") as f:
+            uploaded_file = client.files.create(file=f, purpose="vision")
+        print(f"Upload complete for '{display_name}'. ID: {uploaded_file.id}")
+        return uploaded_file.id
 
     except Exception as e:
         error_msg = f"Failed to extract or upload audio for '{display_name}'. Details: {e}"
         print(error_msg)
-        return error_msg
+        raise IOError(error_msg) from e
 
 
 class ExtractRawAudioArgs(BaseModel):
@@ -110,7 +106,7 @@ class ExtractRawAudioTool(BaseTool):
     def args_schema(self):
         return ExtractRawAudioArgs
 
-    def execute(self, state: 'State', args: ExtractRawAudioArgs, connector: 'LLMConnector') -> Union[str, Tuple[str, List[ContentPart]]]:
+    def execute(self, state: 'State', args: ExtractRawAudioArgs, client: openai.OpenAI) -> str:
         # --- 1. Validation & Setup ---
         full_path = os.path.join(state.assets_directory, args.source_filename)
         if not os.path.exists(full_path):
@@ -147,23 +143,19 @@ class ExtractRawAudioTool(BaseTool):
         with tempfile.TemporaryDirectory() as tmpdir:
             display_name = f"audio-{args.source_filename}-{start_sec:.2f}s-{end_sec:.2f}s"
             result = _extract_and_upload_audio_segment(
-                full_path, start_sec, duration_to_extract, display_name, connector, tmpdir
+                full_path, start_sec, duration_to_extract, display_name, client, tmpdir
             )
 
-            if isinstance(result, str): # It's an error string
-                return result
+            # The helper now returns a file_id string on success.
+            file_id = result
+            state.uploaded_files.append(file_id)
+            # NOTE: The OpenAI API does not currently support 'audio' input types in the same
+            # way as images via file_id. We will add it to the list for the agent, but
+            # this may need adjustment when the API supports it. For now, we treat it like an image.
+            state.new_file_ids_for_model.append(file_id)
 
-            audio_file = result
-            state.uploaded_files.append(audio_file)
-
-            # --- 4. Construct the multimodal response as a tuple ---
-            confirmation_text = (
+            # --- 4. Return a simple confirmation string ---
+            return (
                 f"Successfully extracted and uploaded raw audio from '{args.source_filename}' "
-                f"from {start_sec:.2f}s to {end_sec:.2f}s. The following content contains the audio information."
+                f"from {start_sec:.2f}s to {end_sec:.2f}s. The agent can now process it."
             )
-            
-            multimodal_parts = [
-                ContentPart(type='audio', file=audio_file)
-            ]
-            
-            return (confirmation_text, multimodal_parts)

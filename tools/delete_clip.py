@@ -1,6 +1,7 @@
 # codec/tools/delete_clip.py
 
 from typing import List, TYPE_CHECKING
+import openai
 
 from pydantic import BaseModel, Field
 
@@ -9,7 +10,6 @@ from .base import BaseTool
 # Use a forward reference for the State class to avoid circular imports.
 if TYPE_CHECKING:
     from state import State
-    from llm.base import LLMConnector
 
 
 class DeleteClipsArgs(BaseModel):
@@ -43,7 +43,7 @@ class DeleteClipTool(BaseTool):
     def args_schema(self):
         return DeleteClipsArgs
 
-    def execute(self, state: 'State', args: DeleteClipsArgs, connector: 'LLMConnector') -> str:
+    def execute(self, state: 'State', args: DeleteClipsArgs, client: openai.OpenAI) -> str:
         # --- 1. Input Validation ---
         if args.ripple and len(args.clip_ids) > 1:
             return "Error: Ripple delete is not supported when deleting multiple clips at once. Please provide only one clip_id when ripple is True."

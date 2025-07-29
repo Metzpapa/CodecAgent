@@ -3,6 +3,7 @@
 import os
 import math
 from typing import TYPE_CHECKING
+import openai
 from pydantic import BaseModel, Field
 
 from .base import BaseTool
@@ -12,7 +13,6 @@ from utils import hms_to_seconds # <-- IMPORT THE CENTRALIZED HELPER
 # Use a forward reference for the State class to avoid circular imports.
 if TYPE_CHECKING:
     from state import State
-    from llm.base import LLMConnector
 
 
 class SplitClipArgs(BaseModel):
@@ -52,7 +52,7 @@ class SplitClipTool(BaseTool):
 
     # REMOVED: The local _hms_to_seconds method is no longer needed.
 
-    def execute(self, state: 'State', args: SplitClipArgs, connector: 'LLMConnector') -> str:
+    def execute(self, state: 'State', args: SplitClipArgs, client: openai.OpenAI) -> str:
         # --- 1. Find the target clip and convert time ---
         original_clip = state.find_clip_by_id(args.clip_id)
         if not original_clip:
