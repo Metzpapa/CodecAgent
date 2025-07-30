@@ -11,7 +11,7 @@ from typing import Dict, List, Any
 
 # --- MODIFIED: Direct OpenAI import, no more abstractions ---
 import openai
-from openai.types.responses import FunctionCall
+from openai.types.responses import ResponseFunctionToolCall
 
 # Local imports
 import tools
@@ -24,8 +24,6 @@ You are codec, a autonomous agent that edits videos.
 Users Request:
 {user_request}
 Please keep going until the user's request is completely resolved. If the request is generic, make a generic video.
-First, you should explore the media and get a lay of the land. This means viewing most of the media using the view_video and extract_audio tools. Once you understand what content you are working with, then you can start actually editing. The edit does not need to be perfect. 
-Once you have enough media to make an edit finalize the edit and export it for the user. **You cannot ask any questions to the user. Before at least giving the user a rough draft of the video**
 """
 
 
@@ -138,7 +136,7 @@ class Agent:
                 "".join([c.text for c in item.content if hasattr(c, 'text')])
                 for item in response.output if item.type == 'message'
             ]
-            tool_calls: List[FunctionCall] = [item for item in response.output if item.type == 'function_call']
+            tool_calls: List[ResponseFunctionToolCall] = [item for item in response.output if item.type == 'function_call']
 
             if text_outputs:
                 full_text = "\n".join(text_outputs)
