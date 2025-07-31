@@ -6,7 +6,6 @@ import pkgutil
 import importlib
 import json
 import pprint
-import sys
 import logging
 from typing import Dict, List, Any
 
@@ -24,7 +23,7 @@ SYSTEM_PROMPT_TEMPLATE = """
 You are codec, a autonomous agent that edits videos.
 Users Request:
 {user_request}
-Please keep going until the user's request is completely resolved. If the request is generic, make a generic video.
+Please keep going until the user's request is completely resolved. If the request is generic, make a generic video. 
 """
 
 
@@ -43,8 +42,9 @@ class Agent:
         self.state = state
         api_key = os.environ.get("OPENAI_API_KEY")
         if not api_key:
-            logging.error("OPENAI_API_KEY is not set. Please add it to your .env file.")
-            sys.exit(1)
+            error_msg = "OPENAI_API_KEY is not set. Please add it to your .env file or set it as an environment variable."
+            logging.error(error_msg)
+            raise ValueError(error_msg)
 
         # --- MODIFIED: Directly initialize the OpenAI client ---
         # No more provider switching logic. We are all-in on OpenAI.

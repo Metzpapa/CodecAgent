@@ -4,6 +4,7 @@ import os
 import logging
 import sys
 from pathlib import Path
+from dotenv import load_dotenv
 
 from celery import Celery
 from celery.signals import worker_process_init
@@ -16,6 +17,8 @@ from .state import State
 from .tools.export_timeline import ExportTimelineTool, ExportTimelineArgs
 
 # --- Celery Application Setup ---
+
+load_dotenv()  # Load environment variables from .env file
 
 # Get broker and backend URLs from environment variables, with defaults for local dev.
 # This makes the app configurable for production without changing the code.
