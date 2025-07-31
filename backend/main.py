@@ -1,133 +1,176 @@
-# codec/main.py
+# backend/main.py
 
+import uuid
 import os
-import sys
-import warnings
-from dotenv import load_dotenv
+import shutil
+from pathlib import Path
+from typing import List, Dict
 
-# --- CONFIGURE WARNINGS FIRST ---
-# This ensures the filter is active before any other modules that might
-# trigger the warning are imported.
-warnings.filterwarnings(
-    "ignore",
-    message="there are non-text parts in the response",
-    category=UserWarning
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException, BackgroundTasks
+from fastapi.responses import JSONResponse, FileResponse
+from fastapi.middleware.cors import CORSMiddleware
+
+# We will create tasks.py next. This import prepares for that.
+# It imports the Celery application instance and the task function we will define.
+from .tasks import celery_app, run_editing_job
+
+# --- Configuration ---
+# Define a base directory where all job-related files will be stored.
+# Using pathlib.Path makes the code work on Windows, macOS, and Linux.
+JOBS_BASE_DIR = Path("codec_jobs")
+JOBS_BASE_DIR.mkdir(exist_ok=True)
+
+# This is a simple, in-memory dictionary to track job information.
+# In a production system, you would replace this with a database like Redis
+# or PostgreSQL to persist job state even if the API server restarts.
+job_store: Dict[str, Dict] = {}
+
+
+# --- FastAPI App Initialization ---
+app = FastAPI(title="Codec AI Video Editing Backend")
+
+# --- CORS Middleware ---
+# The front-end website will run on a different "origin" (e.g., http://localhost:3000)
+# than the API (e.g., http://localhost:8000). Browsers block requests between
+# different origins by default for security. This middleware tells the browser
+# that it's safe to allow requests from our front-end.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # For development, we allow any origin.
+    allow_credentials=True,
+    allow_methods=["*"],  # Allow all HTTP methods (GET, POST, etc.)
+    allow_headers=["*"],  # Allow all HTTP headers.
 )
-# --------------------------------
-
-from agent import Agent
-from state import State
 
 
-def check_api_key():
+# --- Helper Functions ---
+def cleanup_job_files(job_dir: Path):
+    """A helper to safely remove a job's directory and all its contents."""
+    print(f"Cleaning up job directory: {job_dir}")
+    if job_dir.exists() and job_dir.is_dir():
+        shutil.rmtree(job_dir)
+
+
+# --- API Endpoints ---
+
+@app.get("/")
+def read_root():
+    """A simple 'health check' endpoint to confirm the API is running."""
+    return {"message": "Codec AI Backend is running."}
+
+
+@app.post("/jobs", status_code=202)
+async def create_job(
+    background_tasks: BackgroundTasks,
+    prompt: str = Form(...),
+    files: List[UploadFile] = File(...)
+):
     """
-    Checks if the necessary OpenAI API key is set.
+    This is the main endpoint to start a new video editing job.
+    It's designed to be fast and non-blocking.
+
+    1. Creates a unique job ID and a dedicated directory for its assets.
+    2. Saves the user's uploaded files into that directory.
+    3. Dispatches the actual editing task to a background Celery worker.
+    4. Immediately returns the job ID to the client, so the user isn't left waiting.
     """
-    if not os.getenv("OPENAI_API_KEY"):
-        print("❌ Error: OPENAI_API_KEY is not set.")
-        print("Please add it to your .env file.")
-        sys.exit(1)
+    job_id = str(uuid.uuid4())
+    job_dir = JOBS_BASE_DIR / job_id
+    assets_dir = job_dir / "assets"
+    output_dir = job_dir / "output"
 
-
-def print_startup_screen():
-    """Displays a visually distinct welcome message for the CLI tool."""
-    print("=" * 60)
-    print("🎬 Welcome to Codec - The AI Video Editing Agent 🎬")
-    print("=" * 60)
-    print("Type 'exit' or 'quit' at any time to end the session.\n")
-
-
-def get_assets_directory() -> str:
-    """
-    Gets the assets directory path. It first checks for the CODEC_ASSETS_DIR
-    environment variable. If not found or invalid, it falls back to prompting the user.
-    """
-    env_dir = os.getenv("CODEC_ASSETS_DIR")
-    if env_dir:
-        if os.path.isdir(env_dir):
-            print(f"✅ Using default assets directory from environment: {env_dir}\n")
-            return env_dir
-        else:
-            print(f"⚠️ Warning: CODEC_ASSETS_DIR is set to '{env_dir}', but this is not a valid directory.")
-            print("Please provide a valid path below.")
-
-    # Fallback to interactive prompt
-    while True:
-        assets_dir = input("➡️  Enter the path to your assets directory: ").strip()
-        if os.path.isdir(assets_dir):
-            print(f"✅ Assets directory found: {assets_dir}\n")
-            return assets_dir
-        else:
-            print(f"❌ Error: Directory not found at '{assets_dir}'. Please try again.")
-
-
-def get_initial_prompt() -> str:
-    """
-    Prompts the user for the initial multi-line prompt.
-    """
-    print("➡️  Enter your initial editing instructions below.")
-    print("   (You can write multiple lines. Press Enter on an empty line to send.)")
-    lines = []
-    while True:
-        try:
-            line = input()
-            if line == "":
-                break
-            lines.append(line)
-        except EOFError:  # Handle Ctrl+D as a way to end input
-            break
-    return "\n".join(lines).strip()
-
-
-def main():
-    """The main entry point and orchestration logic for the application."""
-    # --- One-Time Setup ---
-    load_dotenv()
-    check_api_key() # This function is now provider-aware
-    print_startup_screen()
-
-    assets_directory_input = get_assets_directory()
-
-    absolute_assets_directory = os.path.abspath(assets_directory_input)
-    print(f"✅ Using absolute path for assets: {absolute_assets_directory}\n")
-
-    # The Agent's __init__ now handles selecting the correct connector.
-    session_state = State(assets_directory=absolute_assets_directory)
-    video_agent = Agent(state=session_state)
-
-    # --- Main Conversation Loop ---
     try:
-        prompt = get_initial_prompt()
-        session_state.initial_prompt = prompt
-        while True:
-            if not prompt:
-                prompt = input("➡️  You: ").strip()
-                continue
+        # Create the necessary folder structure for this specific job.
+        assets_dir.mkdir(parents=True, exist_ok=True)
+        output_dir.mkdir(exist_ok=True)
 
-            if prompt.lower().strip() in ["exit", "quit"]:
-                break
+        # Loop through the uploaded files and save them to the job's assets directory.
+        for file in files:
+            # Basic security: prevent path traversal attacks.
+            if ".." in file.filename or "/" in file.filename:
+                raise HTTPException(status_code=400, detail=f"Invalid filename: {file.filename}")
+            
+            file_path = assets_dir / file.filename
+            with file_path.open("wb") as buffer:
+                shutil.copyfileobj(file.file, buffer)
+            print(f"Saved asset file for job {job_id}: {file_path}")
 
-            video_agent.run(prompt=prompt)
-            prompt = input("\n➡️  You: ").strip()
+    except Exception as e:
+        # If anything goes wrong during setup, clean up the partially created
+        # directories and inform the client.
+        cleanup_job_files(job_dir)
+        raise HTTPException(status_code=500, detail=f"Failed to set up job environment: {e}")
 
-    finally:
-        print("\nCleaning up session resources...")
-        if session_state.uploaded_files:
-            print(f"Deleting {len(session_state.uploaded_files)} uploaded files...")
-            # session_state.uploaded_files is now a simple list of file ID strings.
-            for file_id in session_state.uploaded_files:
-                try:
-                    # We make a direct, simple call to the OpenAI client.
-                    print(f"  - Deleting OpenAI file: {file_id}")
-                    video_agent.client.files.delete(file_id=file_id)
-                except Exception as e:
-                    # Log if a specific file fails to delete, but continue trying others
-                    print(f"  - Failed to delete {file_id}: {e}")
-        else:
-            print("No uploaded files to clean up.")
-        
-        print("\n👋 Goodbye! Session ended.")
+    # Store initial information about the job.
+    job_store[job_id] = {
+        "status": "PENDING",
+        "result": None,
+        "job_dir": str(job_dir),
+        "output_dir": str(output_dir)
+    }
+
+    # This is the key step: we ask Celery to run our task in the background.
+    # We use .apply_async() to pass arguments and assign our custom job_id as the task_id.
+    print(f"Dispatching job {job_id} to Celery worker.")
+    run_editing_job.apply_async(
+        args=[job_id, prompt, str(assets_dir), str(output_dir)],
+        task_id=job_id
+    )
+
+    # The status code 202 Accepted is the standard for "I've received your
+    # request and will process it, but it's not done yet."
+    return {"job_id": job_id, "status": "ACCEPTED"}
 
 
-if __name__ == "__main__":
-    main()
+@app.get("/jobs/{job_id}/status")
+def get_job_status(job_id: str):
+    """
+    Allows the front-end to poll for the status of a specific job.
+    It checks the Celery backend (Redis) for the real-time status of the task.
+    """
+    task_result = celery_app.AsyncResult(job_id)
+
+    status = task_result.status
+    result = task_result.result
+
+    # If the job failed, the result will be an Exception object.
+    # We convert it to a string to make it JSON-serializable.
+    if isinstance(result, Exception):
+        result = str(result)
+
+    return {"job_id": job_id, "status": status, "result": result}
+
+
+@app.get("/jobs/{job_id}/download")
+async def download_result(job_id: str, background_tasks: BackgroundTasks):
+    """
+    Serves the final output file for a completed job.
+    Once the download is initiated, it schedules the job's files for cleanup.
+    """
+    task_result = celery_app.AsyncResult(job_id)
+
+    if not task_result.ready():
+        raise HTTPException(status_code=400, detail=f"Job is not complete. Current status: {task_result.status}")
+
+    if task_result.failed():
+        raise HTTPException(status_code=404, detail=f"Job failed and has no output file. Error: {task_result.result}")
+
+    result_info = task_result.result
+    if not isinstance(result_info, dict) or "output_path" not in result_info:
+        raise HTTPException(status_code=404, detail="Job finished, but no output file path was found in the result.")
+
+    output_file_path = Path(result_info["output_path"])
+
+    if not output_file_path.is_file():
+        raise HTTPException(status_code=404, detail=f"Output file not found on server at path: {output_file_path}")
+
+    # Use FastAPI's BackgroundTasks to delete the job directory *after*
+    # the response has been sent to the user.
+    job_dir = output_file_path.parent.parent # e.g., codec_jobs/job_id/output -> codec_jobs/job_id
+    background_tasks.add_task(cleanup_job_files, job_dir)
+
+    return FileResponse(
+        path=output_file_path,
+        filename=output_file_path.name,
+        media_type='application/octet-stream'  # A generic type to force browser download.
+    )

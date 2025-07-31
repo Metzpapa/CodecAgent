@@ -1,4 +1,7 @@
-# codec/requirements.txt
+fastapi~=0.111.0
+uvicorn~=0.29.0
+celery~=5.4.0
+redis~=5.0.4
 openai
 pydantic~=2.7.0
 python-dotenv~=1.0.1
