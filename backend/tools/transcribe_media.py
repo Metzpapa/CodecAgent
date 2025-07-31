@@ -10,10 +10,10 @@ import openai
 
 # Local imports
 from .base import BaseTool
-from utils import probe_media_file
+from ..utils import probe_media_file
 
 if TYPE_CHECKING:
-    from state import State
+    from ..state import State
 
 # OpenAI's Whisper API has a 25 MB file size limit.
 WHISPER_API_LIMIT_BYTES = 25 * 1024 * 1024

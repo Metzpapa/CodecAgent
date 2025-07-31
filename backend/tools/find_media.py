@@ -14,10 +14,10 @@ from pydantic import BaseModel, Field
 
 from .base import BaseTool
 import openai
-from utils import hms_to_seconds
+from ..utils import hms_to_seconds
 
 if TYPE_CHECKING:
-    from state import State
+    from ..state import State
 
 # --- Pydantic Models ---
 

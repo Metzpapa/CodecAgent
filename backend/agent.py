@@ -15,9 +15,9 @@ import openai
 from openai.types.responses import ResponseFunctionToolCall
 
 # Local imports
-import tools
-from state import State
-from tools.base import BaseTool
+from . import tools
+from .state import State
+from .tools.base import BaseTool
 
 
 SYSTEM_PROMPT_TEMPLATE = """

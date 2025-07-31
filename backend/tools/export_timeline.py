@@ -13,11 +13,11 @@ import opentimelineio as otio
 from pydantic import BaseModel, Field
 
 from .base import BaseTool
-from state import TimelineClip
+from ..state import TimelineClip
 
 # Use a forward reference for the State class to avoid circular imports.
 if TYPE_CHECKING:
-    from state import State
+    from ..state import State
 
 
 class ExportTimelineArgs(BaseModel):

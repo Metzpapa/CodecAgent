@@ -5,10 +5,10 @@ import os
 from typing import TYPE_CHECKING
 import openai
 
-from tools.base import BaseTool, NoOpArgs
+from .base import BaseTool, NoOpArgs
 
 if TYPE_CHECKING:
-    from state import State
+    from ..state import State
 
 
 class ListAssetsTool(BaseTool):

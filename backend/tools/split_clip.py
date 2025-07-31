@@ -7,12 +7,12 @@ import openai
 from pydantic import BaseModel, Field
 
 from .base import BaseTool
-from state import TimelineClip
-from utils import hms_to_seconds # <-- IMPORT THE CENTRALIZED HELPER
+from ..state import TimelineClip
+from ..utils import hms_to_seconds # <-- IMPORT THE CENTRALIZED HELPER
 
 # Use a forward reference for the State class to avoid circular imports.
 if TYPE_CHECKING:
-    from state import State
+    from ..state import State
 
 
 class SplitClipArgs(BaseModel):

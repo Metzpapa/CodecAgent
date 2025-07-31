@@ -13,11 +13,11 @@ from collections import defaultdict
 from pydantic import BaseModel, Field
 
 from .base import BaseTool
-from utils import hms_to_seconds
+from ..utils import hms_to_seconds
 
 # Use a forward reference for the State class to avoid circular imports.
 if TYPE_CHECKING:
-    from state import State
+    from ..state import State
 
 
 class ViewTimelineArgs(BaseModel):

@@ -14,11 +14,11 @@ from pydantic import BaseModel, Field
 import openai
 
 from .base import BaseTool
-from utils import hms_to_seconds, probe_media_file
+from ..utils import hms_to_seconds, probe_media_file
 
 # --- MODIFIED: Update TYPE_CHECKING imports for the new interface ---
 if TYPE_CHECKING:
-    from state import State
+    from ..state import State
 
 
 def _extract_and_upload_frame(

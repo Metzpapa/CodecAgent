@@ -9,7 +9,7 @@ from pydantic import BaseModel
 
 # Use a forward reference for the State class to avoid circular imports.
 if TYPE_CHECKING:
-    from state import State
+    from ..state import State
 
 
 class NoOpArgs(BaseModel):

@@ -14,11 +14,11 @@ from pydantic import BaseModel, Field
 from PIL import Image, ImageDraw, ImageFont
 
 from .base import BaseTool
-from utils import hms_to_seconds
+from ..utils import hms_to_seconds
 import openai
 
 if TYPE_CHECKING:
-    from state import State
+    from ..state import State
 
 
 class VisualizeTimelineArgs(BaseModel):
