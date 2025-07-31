@@ -1,4 +1,4 @@
-# codec/agent.py
+# codec/backend/agent.py
 
 import os
 import inspect
@@ -17,13 +17,17 @@ from openai.types.responses import ResponseFunctionToolCall
 from . import tools
 from .state import State
 from .tools.base import BaseTool
+# +++ NEW: Import the custom exception for clean job termination +++
+from .tools.finish_job import JobFinishedException
 
 
 SYSTEM_PROMPT_TEMPLATE = """
 You are codec, a autonomous agent that edits videos.
 Users Request:
 {user_request}
-Please keep going until the user's request is completely resolved. If the request is generic, make a generic video. 
+To complete the job, you MUST call the `finish_job` tool. This is your final step.
+You can use it to either export a finished timeline and provide a success message,
+or to explain why the request could not be completed.
 """
 
 
@@ -63,7 +67,8 @@ class Agent:
         """
         loaded_tools = {}
         for _, module_name, _ in pkgutil.iter_modules(tools.__path__, tools.__name__ + "."):
-            if module_name.endswith(".base"):
+            # Explicitly skip the base class and the old, now-deleted export tool
+            if module_name.endswith(".base") or module_name.endswith(".export_timeline"):
                 continue
             
             module = importlib.import_module(module_name)
@@ -93,6 +98,7 @@ class Agent:
         Starts and manages the agent's execution loop for a user's request.
         This loop handles the stateful, multi-step conversation with the
         OpenAI API, including all necessary tool calls.
+        It will exit cleanly when the `finish_job` tool raises a JobFinishedException.
         """
         logging.info("\n--- User Prompt ---")
         logging.info(prompt)
@@ -145,7 +151,7 @@ class Agent:
                 logging.info("------------------------")
 
             if not tool_calls:
-                logging.info("\nAgent has finished its turn.")
+                logging.warning("\nAgent has finished its turn without calling finish_job. This may be an error.")
                 break # Exit the tool-calling loop for this user request.
 
             # --- Execute Tools and Prepare for Next API Call ---
@@ -166,8 +172,14 @@ class Agent:
                         # Pass the OpenAI client directly to tools that need it (e.g., for file uploads)
                         # The tool now returns a simple string and modifies state for multimodal output.
                         tool_output_string = tool_to_execute.execute(self.state, validated_args, self.client)
+                    # +++ NEW: Catch the JobFinishedException and re-raise it to exit the loop +++
+                    except JobFinishedException:
+                        logging.info("`finish_job` tool called. Propagating signal to terminate.")
+                        raise # Re-raise the exception to be caught by the Celery task
                     except Exception as e:
                         tool_output_string = f"Error executing tool '{call.name}': {e}"
+                        logging.error(f"Error during tool execution for '{call.name}'", exc_info=True)
+
 
                 logging.info(f"Tool Result:\n{tool_output_string}\n")
                 tool_outputs_for_api.append({

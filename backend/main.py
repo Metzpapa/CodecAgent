@@ -21,9 +21,7 @@ from .tasks import celery_app, run_editing_job
 JOBS_BASE_DIR = Path("codec_jobs")
 JOBS_BASE_DIR.mkdir(exist_ok=True)
 
-# This is a simple, in-memory dictionary to track job information.
-# In a production system, you would replace this with a database like Redis
-# or PostgreSQL to persist job state even if the API server restarts.
+
 job_store: Dict[str, Dict] = {}
 
 
@@ -128,6 +126,7 @@ def get_job_status(job_id: str):
     """
     Allows the front-end to poll for the status of a specific job.
     It checks the Celery backend (Redis) for the real-time status of the task.
+    The result will now be a richer dictionary from the finish_job tool.
     """
     task_result = celery_app.AsyncResult(job_id)
 
@@ -145,7 +144,7 @@ def get_job_status(job_id: str):
 @app.get("/jobs/{job_id}/download")
 async def download_result(job_id: str, background_tasks: BackgroundTasks):
     """
-    Serves the final output file for a completed job.
+    Serves the final output file for a completed job, if one exists.
     Once the download is initiated, it schedules the job's files for cleanup.
     """
     task_result = celery_app.AsyncResult(job_id)
@@ -157,18 +156,39 @@ async def download_result(job_id: str, background_tasks: BackgroundTasks):
         raise HTTPException(status_code=404, detail=f"Job failed and has no output file. Error: {task_result.result}")
 
     result_info = task_result.result
-    if not isinstance(result_info, dict) or "output_path" not in result_info:
-        raise HTTPException(status_code=404, detail="Job finished, but no output file path was found in the result.")
+    # --- MODIFIED: Handle the new, richer result format from the finish_job tool ---
+    if not isinstance(result_info, dict):
+        raise HTTPException(status_code=404, detail="Job result is not in the expected format.")
 
-    output_file_path = Path(result_info["output_path"])
+    # Check if an output path exists in the result. A job can complete successfully
+    # with just a message and no downloadable file.
+    output_path_str = result_info.get("output_path")
+    if not output_path_str:
+        # The job finished but produced no file.
+        # We can include the agent's message in the error for clarity on the client-side.
+        agent_message = result_info.get("message", "No output file was generated.")
+        raise HTTPException(status_code=404, detail=f"Job completed with no downloadable file. Agent message: '{agent_message}'")
+
+    output_file_path = Path(output_path_str)
 
     if not output_file_path.is_file():
         raise HTTPException(status_code=404, detail=f"Output file not found on server at path: {output_file_path}")
 
     # Use FastAPI's BackgroundTasks to delete the job directory *after*
     # the response has been sent to the user.
-    job_dir = output_file_path.parent.parent # e.g., codec_jobs/job_id/output -> codec_jobs/job_id
-    background_tasks.add_task(cleanup_job_files, job_dir)
+    # The path could be codec_jobs/job_id/output/consolidated_folder/file.otio
+    # We need to find the root job directory to delete.
+    job_dir = None
+    for p in output_file_path.parents:
+        if p.name == job_id:
+            job_dir = p
+            break
+    
+    if job_dir:
+        background_tasks.add_task(cleanup_job_files, job_dir)
+    else:
+        logging.warning(f"Could not determine job directory from path {output_file_path} to schedule cleanup.")
+
 
     return FileResponse(
         path=output_file_path,

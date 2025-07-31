@@ -13,8 +13,8 @@ from celery.signals import worker_process_init
 # We import the core Agent and State classes.
 from .agent import Agent
 from .state import State
-# We need to explicitly call the export tool at the end of a successful run.
-from .tools.export_timeline import ExportTimelineTool, ExportTimelineArgs
+# +++ NEW: Import the custom exception to handle graceful job completion +++
+from .tools.finish_job import JobFinishedException
 
 # --- Celery Application Setup ---
 
@@ -106,62 +106,29 @@ def run_editing_job(self, job_id: str, prompt: str, assets_directory: str, outpu
         self.update_state(state='PROGRESS', meta={'status': 'Initializing agent...'})
 
         # 2. Initialize the agent's state and the agent itself.
-        # This is the same logic that was in your old main.py.
         session_state = State(assets_directory=assets_directory)
         video_agent = Agent(state=session_state)
 
         # 3. Run the main agent loop. This is the core, long-running process.
         logging.info("Agent initialized. Starting main execution loop...")
         self.update_state(state='PROGRESS', meta={'status': 'Agent is processing the request...'})
+        
+        # The agent's run method will execute until the `finish_job` tool is called,
+        # which raises a JobFinishedException to be caught below.
         video_agent.run(prompt=prompt)
-        logging.info("Agent has finished its execution loop.")
 
-        # 4. Export the final timeline.
-        # After the agent has built the timeline, we must export it to a file.
-        self.update_state(state='PROGRESS', meta={'status': 'Exporting final timeline...'})
-        
-        if not session_state.timeline:
-            raise ValueError("Agent finished but the timeline is empty. Nothing to export.")
+        # --- MODIFIED: This part of the code should no longer be reachable ---
+        # If the agent's run loop finishes without raising the special exception,
+        # it means the agent stopped without formally finishing the job. This is an error.
+        raise RuntimeError("Agent execution loop finished without calling the 'finish_job' tool. The job is incomplete.")
 
-        export_tool = ExportTimelineTool()
-        # We'll create a self-contained project in the job's output directory.
-        output_filename = "codec_edit.otio"
-        export_args = ExportTimelineArgs(
-            output_filename=output_filename,
-            consolidate=True # This is important for creating a portable result.
-        )
-        
-        # The export tool needs a slightly different setup now.
-        # We'll temporarily change the "home" directory for the export function
-        # so it correctly places the consolidated project inside our job's output folder.
-        # This is a small hack to adapt the existing tool.
-        original_home = Path.home
-        Path.home = lambda: Path(output_dir)
-        
-        export_result = export_tool.execute(state=session_state, args=export_args, client=video_agent.client)
-        
-        # Restore the original home function
-        Path.home = original_home
-
-        if "Error" in export_result:
-            raise RuntimeError(f"Failed to export timeline: {export_result}")
-        
-        logging.info(f"Export successful. Result: {export_result}")
-
-        # The final consolidated folder is inside the output_dir.
-        # We need to find the actual .otio file path to return.
-        # The export tool creates a folder like "codec_edit_YYYYMMDD_HHMMSS"
-        consolidated_folder = next(Path(output_dir).iterdir()) # Get the first (and only) sub-directory
-        final_output_path = consolidated_folder / output_filename
-
-        # 5. Return the successful result.
-        # This dictionary will be stored as the task's result in Redis.
-        return {
-            "status": "COMPLETE",
-            "output_path": str(final_output_path.resolve())
-        }
+    # +++ NEW: Catch the specific exception for a graceful, controlled finish +++
+    except JobFinishedException as e:
+        logging.info(f"Job {job_id} finished gracefully via finish_job tool.")
+        # The result payload from the exception becomes the final result of the Celery task.
+        return e.result
 
     except Exception as e:
-        logging.error(f"Job {job_id} failed.", exc_info=True) # exc_info=True adds the traceback
+        logging.error(f"Job {job_id} failed with an unhandled exception.", exc_info=True) # exc_info=True adds the traceback
         # This ensures the exception is propagated so Celery marks the task as FAILED.
         raise e
