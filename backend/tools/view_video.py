@@ -6,6 +6,7 @@ from typing import Optional, Union, List, TYPE_CHECKING, Tuple
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import tempfile
 from pathlib import Path
+import logging
 
 from pydantic import BaseModel, Field
 
@@ -41,15 +42,15 @@ def _extract_and_upload_frame(
         )
 
         # 2. Upload the extracted frame using the OpenAI client
-        print(f"Uploading frame from '{display_name}' at {timestamp_sec:.3f}s...")
+        logging.info(f"Uploading frame from '{display_name}' at {timestamp_sec:.3f}s...")
         with open(output_path, "rb") as f:
             uploaded_file = client.files.create(file=f, purpose="vision")
-        print(f"Upload complete for '{display_name}'. ID: {uploaded_file.id}")
+        logging.info(f"Upload complete for '{display_name}'. ID: {uploaded_file.id}")
         return uploaded_file.id
 
     except Exception as e:
         error_msg = f"Failed to extract or upload frame for '{display_name}' at {timestamp_sec:.3f}s. Details: {e}"
-        print(error_msg)
+        logging.error(error_msg)
         raise IOError(error_msg) from e
 
 
@@ -143,7 +144,7 @@ class ViewVideoTool(BaseTool):
         
         # --- 3. Parallel Extraction & Upload ---
         with tempfile.TemporaryDirectory() as tmpdir:
-            print(f"Starting parallel extraction and upload of {len(timestamps)} frames from '{args.source_filename}'...")
+            logging.info(f"Starting parallel extraction and upload of {len(timestamps)} frames from '{args.source_filename}'...")
             
             upload_results = []
             with ThreadPoolExecutor(max_workers=16) as executor:
@@ -181,7 +182,7 @@ class ViewVideoTool(BaseTool):
                     state.new_file_ids_for_model.append(file_id)
                     successful_uploads += 1
                 else:
-                    print(f"  - Failed to process frame at {ts:.3f}s: {result_or_error}")
+                    logging.warning(f"  - Failed to process frame at {ts:.3f}s: {result_or_error}")
 
             if successful_uploads == 0:
                 return f"Error: Failed to extract or upload any frames from '{args.source_filename}'."

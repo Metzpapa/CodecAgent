@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Dict, List, Tuple, Optional
 import openai
 from collections import defaultdict
 import datetime
+import logging
 
 import opentimelineio as otio
 from pydantic import BaseModel, Field
@@ -66,14 +67,14 @@ class ExportTimelineTool(BaseTool):
                 package_dir = downloads_path / package_name
                 media_dir = package_dir / "media"
                 
-                print(f"Consolidating project into: {package_dir}")
+                logging.info(f"Consolidating project into: {package_dir}")
                 os.makedirs(media_dir, exist_ok=True)
 
                 unique_source_paths = {clip.source_path for clip in state.timeline}
                 for src_path_str in unique_source_paths:
                     src_path = Path(src_path_str)
                     dest_path = media_dir / src_path.name
-                    print(f"  - Copying {src_path.name}...")
+                    logging.info(f"  - Copying {src_path.name}...")
                     shutil.copy2(src_path, dest_path)
 
                 base_path_for_relinking = package_dir
@@ -90,7 +91,7 @@ class ExportTimelineTool(BaseTool):
             # --- COMMON BUILD & WRITE LOGIC ---
             fps, width, height = state.get_sequence_properties()
             
-            print(f"✅ Using sequence properties: {width}x{height} @ {fps:.2f} fps")
+            logging.info(f"Using sequence properties: {width}x{height} @ {fps:.2f} fps")
             # MODIFIED: Pass the `consolidate` flag down to the build methods
             otio_timeline = self._build_otio_timeline(state, fps, width, height, base_path_for_relinking, consolidated=args.consolidate)
 

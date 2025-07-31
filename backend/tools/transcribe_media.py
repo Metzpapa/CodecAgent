@@ -3,6 +3,7 @@
 import os
 import tempfile
 import ffmpeg
+import logging
 from typing import Optional, Literal, TYPE_CHECKING, Dict, Any
 from pydantic import BaseModel, Field
 import openai
@@ -93,7 +94,7 @@ class TranscribeMediaTool(BaseTool):
         if not media_info.has_audio:
             return f"Error: Asset file '{args.source_filename}' contains no audio stream to transcribe."
 
-        print(f"Extracting audio from asset: {args.source_filename}")
+        logging.info(f"Extracting audio from asset: {args.source_filename}")
         with tempfile.NamedTemporaryFile(suffix=".mp3", delete=True) as tmp_audio_file:
             tmp_audio_path = tmp_audio_file.name
             try:
@@ -105,7 +106,7 @@ class TranscribeMediaTool(BaseTool):
                 
                 # --- FIX: Proactively check file size before uploading ---
                 file_size = os.path.getsize(tmp_audio_path)
-                print(f"Audio extracted to temporary file. Size: {file_size / (1024*1024):.2f} MB")
+                logging.info(f"Audio extracted to temporary file. Size: {file_size / (1024*1024):.2f} MB")
                 if file_size > WHISPER_API_LIMIT_BYTES:
                     return (
                         f"Error: The extracted audio from '{args.source_filename}' is too large ({file_size / (1024*1024):.2f} MB) "
@@ -117,7 +118,7 @@ class TranscribeMediaTool(BaseTool):
             except ffmpeg.Error as e:
                 return f"Error extracting audio from '{args.source_filename}': {e.stderr.decode()}"
 
-            print(f"Transcribing extracted audio from: {args.source_filename}")
+            logging.info(f"Transcribing extracted audio from: {args.source_filename}")
             with open(tmp_audio_path, "rb") as audio_file_handle:
                 whisper_result = self._run_whisper(audio_file_handle, args, client)
         
@@ -128,7 +129,7 @@ class TranscribeMediaTool(BaseTool):
         if not any(c.track_type == 'audio' for c in state.timeline):
             return "Error: The timeline contains no audio clips to transcribe."
 
-        print("Rendering timeline audio for transcription...")
+        logging.info("Rendering timeline audio for transcription...")
         with tempfile.NamedTemporaryFile(suffix=".wav", delete=True) as tmp_audio_file:
             tmp_audio_path = tmp_audio_file.name
             
@@ -136,7 +137,7 @@ class TranscribeMediaTool(BaseTool):
             
             # --- FIX: Proactively check file size for timeline audio as well ---
             file_size = os.path.getsize(tmp_audio_path)
-            print(f"Timeline audio rendered. Size: {file_size / (1024*1024):.2f} MB")
+            logging.info(f"Timeline audio rendered. Size: {file_size / (1024*1024):.2f} MB")
             if file_size > WHISPER_API_LIMIT_BYTES:
                 return (
                     f"Error: The rendered timeline audio is too large ({file_size / (1024*1024):.2f} MB) "
@@ -145,7 +146,7 @@ class TranscribeMediaTool(BaseTool):
                 )
             # --- END FIX ---
             
-            print("Transcribing rendered timeline audio...")
+            logging.info("Transcribing rendered timeline audio...")
             with open(tmp_audio_path, "rb") as audio_file_handle:
                 whisper_result = self._run_whisper(audio_file_handle, args, client)
             
@@ -173,7 +174,7 @@ class TranscribeMediaTool(BaseTool):
 
     def _run_whisper(self, audio_file_handle, args: TranscribeMediaArgs, client: openai.OpenAI) -> Dict[str, Any]:
         """Calls the Whisper API and returns the verbose JSON result."""
-        print("Sending audio to OpenAI Whisper API...")
+        logging.info("Sending audio to OpenAI Whisper API...")
         response = client.audio.transcriptions.create(
             model="whisper-1",
             file=audio_file_handle,
@@ -182,7 +183,7 @@ class TranscribeMediaTool(BaseTool):
             language=args.language,
             prompt=args.prompt
         )
-        print("Received transcription from Whisper API.")
+        logging.info("Received transcription from Whisper API.")
         return response.model_dump()
 
     def _format_transcription(self, result: Dict[str, Any], granularity: str, header: str) -> str:

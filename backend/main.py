@@ -3,6 +3,7 @@
 import uuid
 import os
 import shutil
+import logging
 from pathlib import Path
 from typing import List, Dict
 
@@ -46,7 +47,7 @@ app.add_middleware(
 # --- Helper Functions ---
 def cleanup_job_files(job_dir: Path):
     """A helper to safely remove a job's directory and all its contents."""
-    print(f"Cleaning up job directory: {job_dir}")
+    logging.info(f"Cleaning up job directory: {job_dir}")
     if job_dir.exists() and job_dir.is_dir():
         shutil.rmtree(job_dir)
 
@@ -93,7 +94,7 @@ async def create_job(
             file_path = assets_dir / file.filename
             with file_path.open("wb") as buffer:
                 shutil.copyfileobj(file.file, buffer)
-            print(f"Saved asset file for job {job_id}: {file_path}")
+            logging.info(f"Saved asset file for job {job_id}: {file_path}")
 
     except Exception as e:
         # If anything goes wrong during setup, clean up the partially created
@@ -111,7 +112,7 @@ async def create_job(
 
     # This is the key step: we ask Celery to run our task in the background.
     # We use .apply_async() to pass arguments and assign our custom job_id as the task_id.
-    print(f"Dispatching job {job_id} to Celery worker.")
+    logging.info(f"Dispatching job {job_id} to Celery worker.")
     run_editing_job.apply_async(
         args=[job_id, prompt, str(assets_dir), str(output_dir)],
         task_id=job_id

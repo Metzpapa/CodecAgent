@@ -5,6 +5,7 @@ import json
 import tempfile
 import ffmpeg
 import yt_dlp
+import logging
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Literal, Optional, Tuple, TYPE_CHECKING, Union, List, Dict, Any, Annotated
@@ -99,7 +100,7 @@ class FindMediaTool(BaseTool):
             else:
                 return f"Error: Unknown mode '{args.mode}'."
         except Exception as e:
-            print(f"ERROR in find_media tool: {e}")
+            logging.error(f"ERROR in find_media tool: {e}", exc_info=True)
             import traceback
             traceback.print_exc()
             return f"An unexpected error occurred in the find_media tool: {e}"
@@ -107,7 +108,7 @@ class FindMediaTool(BaseTool):
     # --- Mode-Specific Execution Helpers ---
 
     def _execute_download(self, state: 'State', args: FindMediaArgs) -> str:
-        print(f"Attempting to download media for query: '{args.query}'")
+        logging.info(f"Attempting to download media for query: '{args.query}'")
         
         # --- FIX 1: Prevent double-extension bug ---
         # If a filename is provided, strip its extension. yt-dlp's post-processors
@@ -169,7 +170,7 @@ class FindMediaTool(BaseTool):
         return f"Successfully downloaded '{final_filename}' and added it to the asset library."
 
     def _execute_search_only(self, args: FindMediaArgs) -> str:
-        print(f"Performing search_only for query: '{args.query}'")
+        logging.info(f"Performing search_only for query: '{args.query}'")
         
         ydl_opts = {
             'quiet': True,
@@ -199,7 +200,7 @@ class FindMediaTool(BaseTool):
         return json.dumps(search_results, indent=2)
 
     def _execute_preview(self, args: FindMediaArgs, client: openai.OpenAI, state: 'State') -> str:
-        print(f"Generating preview for query: '{args.query}'")
+        logging.info(f"Generating preview for query: '{args.query}'")
         
         ydl_opts = {
             'quiet': True,
@@ -253,11 +254,11 @@ class FindMediaTool(BaseTool):
         successful_frames = 0
         for i, result_data in enumerate(results_with_jobs):
             entry = result_data['metadata']
-            print(f"--- Preview for Result {i+1} ---")
-            print(f"Title: {entry.get('title', 'N/A')}")
-            print(f"URL: {entry.get('url', 'N/A')}")
-            print(f"Duration: {entry.get('duration_string', 'N/A')}")
-            print(f"Channel: {entry.get('channel', 'N/A')}")
+            logging.info(f"--- Preview for Result {i+1} ---")
+            logging.info(f"Title: {entry.get('title', 'N/A')}")
+            logging.info(f"URL: {entry.get('url', 'N/A')}")
+            logging.info(f"Duration: {entry.get('duration_string', 'N/A')}")
+            logging.info(f"Channel: {entry.get('channel', 'N/A')}")
 
             for job_id in result_data['job_ids']:
                 result = uploaded_frames.get(job_id)
@@ -267,7 +268,7 @@ class FindMediaTool(BaseTool):
                     state.new_file_ids_for_model.append(file_id)
                     successful_frames += 1
                 else:
-                    print(f"  - Failed to generate frame: {result or 'Unknown error'}")
+                    logging.warning(f"  - Failed to generate frame: {result or 'Unknown error'}")
 
         if successful_frames == 0:
             return "Error: Failed to generate any preview frames for the search results."
@@ -303,16 +304,16 @@ class FindMediaTool(BaseTool):
                 .run(capture_stdout=True, capture_stderr=True, overwrite_output=True)
             )
 
-            print(f"Uploading frame: {job['display_name']}")
+            logging.info(f"Uploading frame: {job['display_name']}")
             with open(output_path, "rb") as f:
                 uploaded_file = client.files.create(file=f, purpose="vision")
             return uploaded_file.id
 
         except ffmpeg.Error as e:
             error_msg = f"FFmpeg failed to extract frame. Stderr: {e.stderr.decode()}"
-            print(error_msg)
+            logging.error(error_msg)
             raise IOError(error_msg) from e
         except Exception as e:
             error_msg = f"Failed to extract or upload frame. Details: {e}"
-            print(error_msg)
+            logging.error(error_msg)
             raise IOError(error_msg) from e

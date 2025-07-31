@@ -7,6 +7,7 @@ import importlib
 import json
 import pprint
 import sys
+import logging
 from typing import Dict, List, Any
 
 # --- MODIFIED: Direct OpenAI import, no more abstractions ---
@@ -42,18 +43,18 @@ class Agent:
         self.state = state
         api_key = os.environ.get("OPENAI_API_KEY")
         if not api_key:
-            print("❌ Error: OPENAI_API_KEY is not set. Please add it to your .env file.")
+            logging.error("OPENAI_API_KEY is not set. Please add it to your .env file.")
             sys.exit(1)
 
         # --- MODIFIED: Directly initialize the OpenAI client ---
         # No more provider switching logic. We are all-in on OpenAI.
-        print("🤖 Using OpenAI Responses API (Stateful).")
+        logging.info("Using OpenAI Responses API (Stateful).")
         self.client = openai.OpenAI(api_key=api_key)
         self.model_name = os.environ.get("OPENAI_MODEL_NAME", "gpt-4.1-mini")
 
-        print("Loading tools...")
+        logging.info("Loading tools...")
         self.tools = self._load_tools()
-        print(f"✅ Loaded {len(self.tools)} tools: {', '.join(self.tools.keys())}")
+        logging.info(f"Loaded {len(self.tools)} tools: {', '.join(self.tools.keys())}")
 
     def _load_tools(self) -> Dict[str, BaseTool]:
         """
@@ -93,9 +94,9 @@ class Agent:
         This loop handles the stateful, multi-step conversation with the
         OpenAI API, including all necessary tool calls.
         """
-        print("\n--- User Prompt ---")
-        print(prompt)
-        print("-------------------\n")
+        logging.info("\n--- User Prompt ---")
+        logging.info(prompt)
+        logging.info("-------------------\n")
 
         if self.state.initial_prompt is None:
             self.state.initial_prompt = prompt
@@ -110,7 +111,7 @@ class Agent:
                 user_request=self.state.initial_prompt
             )
 
-            print(f"Sending request to OpenAI... (Previous ID: {self.state.last_response_id})")
+            logging.info(f"Sending request to OpenAI... (Previous ID: {self.state.last_response_id})")
             
             try:
                 response = self.client.responses.create(
@@ -121,7 +122,7 @@ class Agent:
                     previous_response_id=self.state.last_response_id,
                 )
             except openai.APIError as e:
-                print(f"❌ OpenAI API Error: {e}")
+                logging.error(f"OpenAI API Error: {e}", exc_info=True)
                 pprint.pprint(e.response.json())
                 break
 
@@ -140,11 +141,11 @@ class Agent:
 
             if text_outputs:
                 full_text = "\n".join(text_outputs)
-                print(f"\n🤖 Agent says: {full_text}")
-                print("------------------------")
+                logging.info(f"\nAgent says: {full_text}")
+                logging.info("------------------------")
 
             if not tool_calls:
-                print("\n✅ Agent has finished its turn.")
+                logging.info("\nAgent has finished its turn.")
                 break # Exit the tool-calling loop for this user request.
 
             # --- Execute Tools and Prepare for Next API Call ---
@@ -153,7 +154,7 @@ class Agent:
             self.state.new_file_ids_for_model = []
 
             for call in tool_calls:
-                print(f"🤖 Agent wants to call tool: {call.name}({call.arguments})")
+                logging.info(f"Agent wants to call tool: {call.name}({call.arguments})")
                 tool_to_execute = self.tools.get(call.name)
                 tool_output_string = f"Error: Tool '{call.name}' not found."
 
@@ -168,7 +169,7 @@ class Agent:
                     except Exception as e:
                         tool_output_string = f"Error executing tool '{call.name}': {e}"
 
-                print(f"🛠️ Tool Result:\n{tool_output_string}\n")
+                logging.info(f"Tool Result:\n{tool_output_string}\n")
                 tool_outputs_for_api.append({
                     "type": "function_call_output",
                     "call_id": call.call_id,
@@ -180,7 +181,7 @@ class Agent:
             
             # If any tool generated new files for the model to see, we create a new 'user' message.
             if self.state.new_file_ids_for_model:
-                print("🖼️  Presenting new multimodal information to the agent.")
+                logging.info("Presenting new multimodal information to the agent.")
                 multimodal_content = [
                     {"type": "input_image", "file_id": file_id}
                     for file_id in self.state.new_file_ids_for_model

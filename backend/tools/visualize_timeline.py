@@ -3,6 +3,7 @@
 import os
 import math
 import tempfile
+import logging
 from typing import Optional, TYPE_CHECKING, Dict, Tuple
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
@@ -72,7 +73,7 @@ class VisualizeTimelineTool(BaseTool):
                 final_image.save(tmp_file, format="JPEG", quality=85)
                 tmp_file_path = tmp_file.name
 
-            print(f"Uploading timeline visualization from '{tmp_file_path}'...")
+            logging.info(f"Uploading timeline visualization from '{tmp_file_path}'...")
             with open(tmp_file_path, "rb") as f:
                 uploaded_file = client.files.create(file=f, purpose="vision")
             
@@ -83,14 +84,14 @@ class VisualizeTimelineTool(BaseTool):
             return "Successfully generated and uploaded a visual representation of the timeline. The agent can now view it."
 
         except Exception as e:
-            print(f"Error during timeline visualization: {e}")
+            logging.error(f"Error during timeline visualization: {e}", exc_info=True)
             import traceback
             traceback.print_exc()
             return f"An unexpected error occurred while generating the timeline visualization: {e}"
         
         finally:
             if tmp_file_path and os.path.exists(tmp_file_path):
-                print(f"Cleaning up temporary visualization file: {tmp_file_path}")
+                logging.info(f"Cleaning up temporary visualization file: {tmp_file_path}")
                 os.unlink(tmp_file_path)
 
 
@@ -132,7 +133,7 @@ class _TimelineVisualizer:
                 return ImageFont.truetype(font_path, size)
         except Exception:
             pass
-        print(f"Warning: Arial font not found. Using default font for size {size}.")
+        logging.warning(f"Arial font not found. Using default font for size {size}.")
         return ImageFont.load_default(size)
 
     def render(self) -> Optional[Image.Image]:
@@ -212,7 +213,7 @@ class _TimelineVisualizer:
                 try:
                     self.thumbnail_results[job_id] = future.result()
                 except Exception as e:
-                    print(f"ERROR: Thumbnail job {job_id} failed with system error: {e}")
+                    logging.error(f"Thumbnail job {job_id} failed with system error: {e}", exc_info=True)
                     self.thumbnail_results[job_id] = "error"
 
     def _extract_single_thumb(self, job_id: str, job_data: dict, tmpdir: str) -> str:
@@ -229,7 +230,7 @@ class _TimelineVisualizer:
             )
             return output_path
         except ffmpeg.Error as e:
-            print(f"ERROR: ffmpeg failed for job {job_id} on '{source_path}'. Stderr: {e.stderr.decode()}")
+            logging.error(f"ffmpeg failed for job {job_id} on '{source_path}'. Stderr: {e.stderr.decode()}")
             return "error"
 
     def _draw_image(self) -> Image.Image:
@@ -299,7 +300,7 @@ class _TimelineVisualizer:
                         thumb_img = self._letterbox(thumb_img, (int(thumb_width), self.TRACK_HEIGHT))
                         img.paste(thumb_img, (int(thumb_x), y_pos))
                     except Exception as e:
-                         print(f"ERROR: Failed to paste thumbnail for job {job_id}: {e}")
+                         logging.error(f"Failed to paste thumbnail for job {job_id}: {e}", exc_info=True)
                          draw.line([thumb_x + 5, y_pos + 5, thumb_x + thumb_width - 5, y_pos + self.TRACK_HEIGHT - 5], fill=self.COLOR_ERROR, width=3)
         else:
             # --- FIX: Offset "AUDIO" text to avoid overlap ---

@@ -4,6 +4,7 @@ import os
 import ffmpeg
 from typing import Optional, TYPE_CHECKING
 import openai
+import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import tempfile
 from pathlib import Path
@@ -117,7 +118,7 @@ class ViewTimelineTool(BaseTool):
 
         # --- 4. Batch Extraction per Source & Parallel Upload ---
         with tempfile.TemporaryDirectory() as tmpdir:
-            print(f"Starting batch extraction for {len(frames_by_source)} source files...")
+            logging.info(f"Starting batch extraction for {len(frames_by_source)} source files...")
             
             upload_results = {} # Maps timeline_ts -> result (File or error string)
             with ThreadPoolExecutor(max_workers=16) as executor:
@@ -158,7 +159,7 @@ class ViewTimelineTool(BaseTool):
                 clip = event.get('clip')
 
                 if not clip:
-                    print(f"Timeline at {ts:.3f}s: [GAP ON VIDEO TRACKS]")
+                    logging.info(f"Timeline at {ts:.3f}s: [GAP ON VIDEO TRACKS]")
                     continue
 
                 result = upload_results.get(ts)
@@ -169,10 +170,10 @@ class ViewTimelineTool(BaseTool):
                     state.uploaded_files.append(file_id)
                     state.new_file_ids_for_model.append(file_id)
                     successful_frames += 1
-                    print(f"Timeline at {ts:.3f}s (from clip: '{clip.clip_id}' on track {track_name})")
+                    logging.info(f"Timeline at {ts:.3f}s (from clip: '{clip.clip_id}' on track {track_name})")
                 else:
                     error_details = result or "Processing failed."
-                    print(f"  - Failed to process frame from clip '{clip.clip_id}' at timeline {ts:.3f}s: {error_details}")
+                    logging.warning(f"  - Failed to process frame from clip '{clip.clip_id}' at timeline {ts:.3f}s: {error_details}")
             
             if successful_frames == 0:
                 return f"Error: Failed to extract any frames from the timeline between {start_sec:.2f}s and {end_sec:.2f}s."
