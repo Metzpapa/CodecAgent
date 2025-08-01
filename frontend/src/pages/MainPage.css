@@ -1,0 +1,58 @@
+/* frontend/src/pages/MainPage.css */
+
+.main-page-container {
+    max-width: 1200px;
+    margin: 0 auto;
+    padding: 20px;
+}
+
+.main-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding-bottom: 20px;
+    border-bottom: 1px solid #333;
+    margin-bottom: 30px;
+}
+
+.main-header .logo {
+    font-size: 1.8rem;
+    font-weight: 600;
+}
+
+.user-info {
+    display: flex;
+    align-items: center;
+    gap: 20px;
+}
+
+.user-info span {
+    color: #b0b0b0;
+}
+
+.logout-button {
+    background-color: #4a4a4a;
+    color: #e0e0e0;
+    border: 1px solid #666;
+    padding: 8px 16px;
+    border-radius: 5px;
+    cursor: pointer;
+    font-size: 0.9rem;
+    transition: background-color 0.2s, border-color 0.2s;
+}
+
+.logout-button:hover {
+    background-color: #5a5a5a;
+    border-color: #888;
+}
+
+.main-content {
+    text-align: left;
+}
+
+.divider {
+    border: 0;
+    height: 1px;
+    background-color: #333;
+    margin: 40px 0;
+}

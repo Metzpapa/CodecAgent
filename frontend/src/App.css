@@ -1,0 +1,28 @@
+/* frontend/src/App.css */
+
+/* Basic reset and global styles */
+body {
+    margin: 0;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen',
+      'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue',
+      sans-serif;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    background-color: #1a1a1a; /* Dark background for the whole app */
+    color: #e0e0e0; /* Light text color */
+  }
+  
+  /* Main application container */
+  .App {
+    text-align: center;
+  }
+  
+  /* Loading screen container */
+  .loading-container {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    height: 100vh; /* Full viewport height */
+    font-size: 1.5rem;
+    color: #cccccc;
+  }

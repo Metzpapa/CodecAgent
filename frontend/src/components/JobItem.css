@@ -1,0 +1,96 @@
+/* frontend/src/components/JobItem.css */
+
+.job-item {
+    background-color: #2c2c2c;
+    border: 1px solid #444;
+    border-left: 5px solid #666; /* Default border color */
+    border-radius: 5px;
+    padding: 20px;
+    transition: border-color 0.3s;
+}
+
+/* Status-specific styling */
+.job-item.progress, .job-item.pending {
+    border-left-color: #4a90e2; /* Blue for in-progress */
+}
+.job-item.success {
+    border-left-color: #50e3c2; /* Green for success */
+}
+.job-item.failure {
+    border-left-color: #ff6b6b; /* Red for failure */
+}
+
+.job-item-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    margin-bottom: 15px;
+}
+
+.job-prompt {
+    margin: 0;
+    font-style: italic;
+    color: #e0e0e0;
+    flex-grow: 1;
+    margin-right: 20px;
+}
+
+.job-status {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-weight: 600;
+    flex-shrink: 0;
+}
+
+.status-success { color: #50e3c2; }
+.status-failure { color: #ff6b6b; }
+
+.job-agent-message {
+    background-color: #222;
+    padding: 15px;
+    border-radius: 4px;
+    margin: 0 0 15px 0;
+    white-space: pre-wrap; /* Preserves newlines from the agent's message */
+    font-family: monospace;
+    font-size: 0.9rem;
+    color: #b0b0b0;
+}
+
+.job-item-footer {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font-size: 0.85rem;
+    color: #888;
+}
+
+.download-button {
+    background-color: #50e3c2;
+    color: #1a1a1a;
+    padding: 8px 15px;
+    border-radius: 5px;
+    text-decoration: none;
+    font-weight: 600;
+    transition: background-color 0.2s;
+}
+
+.download-button:hover {
+    background-color: #6cffdf;
+}
+
+/* Spinner animation */
+.spinner {
+    border: 3px solid rgba(255, 255, 255, 0.3);
+    border-radius: 50%;
+    border-top-color: #fff;
+    width: 16px;
+    height: 16px;
+    animation: spin 1s ease-in-out infinite;
+}
+
+@keyframes spin {
+    to {
+        transform: rotate(360deg);
+    }
+}

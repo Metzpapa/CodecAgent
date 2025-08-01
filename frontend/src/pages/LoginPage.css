@@ -1,0 +1,47 @@
+/* frontend/src/pages/LoginPage.css */
+
+.login-page-container {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    min-height: 100vh;
+    background-color: #1a1a1a;
+}
+
+.login-box {
+    background-color: #242424;
+    padding: 40px 50px;
+    border-radius: 8px;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+    text-align: center;
+    width: 100%;
+    max-width: 360px;
+}
+
+.login-header h1 {
+    margin: 0;
+    font-size: 3rem;
+    font-weight: 600;
+    color: #f0f0f0;
+}
+
+.login-header p {
+    margin: 5px 0 0 0;
+    color: #a0a0a0;
+    font-size: 1rem;
+}
+
+.login-main {
+    margin-top: 30px;
+}
+
+.login-instructions {
+    color: #c0c0c0;
+    margin-bottom: 25px;
+}
+
+/* This container for the Google button ensures it's centered */
+#google-signin-button {
+    display: flex;
+    justify-content: center;
+}
