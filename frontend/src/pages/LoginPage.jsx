@@ -1,7 +1,7 @@
 // frontend/src/pages/LoginPage.js
 
 import React, { useEffect } from 'react';
-import { useAuth } from '../context/AuthContext';
+import { useAuth } from '../context/AuthContext.jsx';
 import './LoginPage.css'; // We'll create this for styling
 
 function LoginPage() {

@@ -23,7 +23,8 @@ from .auth import get_current_user_id
 # We will create tasks.py next. This import prepares for that.
 # It imports the Celery application instance and the task function we will define.
 from .tasks import celery_app, run_editing_job
-
+from dotenv import load_dotenv
+load_dotenv()
 # --- Configuration ---
 # Define a base directory where all job-related files will be stored.
 # Using pathlib.Path makes the code work on Windows, macOS, and Linux.

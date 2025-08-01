@@ -1,10 +1,10 @@
 // frontend/src/pages/MainPage.js
 
 import React, { useState, useEffect, useCallback } from 'react';
-import { useAuth } from '../context/AuthContext';
+import { useAuth } from '../context/AuthContext.jsx';
 import { getJobs } from '../services/api';
-import CreateJobForm from '../components/CreateJobForm';
-import JobList from '../components/JobList';
+import CreateJobForm from '../components/CreateJobForm.jsx';
+import JobList from '../components/JobList.jsx';
 import './MainPage.css';
 
 function MainPage() {

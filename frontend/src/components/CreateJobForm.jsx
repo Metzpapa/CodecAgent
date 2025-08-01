@@ -1,7 +1,7 @@
 // frontend/src/components/CreateJobForm.js
 
 import React, { useState, useCallback, useRef } from 'react';
-import { useAuth } from '../context/AuthContext';
+import { useAuth } from '../context/AuthContext.jsx';
 import { createJob } from '../services/api';
 import './CreateJobForm.css';
 

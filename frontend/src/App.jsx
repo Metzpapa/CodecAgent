@@ -1,9 +1,9 @@
 // frontend/src/App.js
 
 import React from 'react';
-import { AuthProvider, useAuth } from './context/AuthContext';
-import LoginPage from './pages/LoginPage';
-import MainPage from './pages/MainPage';
+import { AuthProvider, useAuth } from './context/AuthContext.jsx';
+import LoginPage from './pages/LoginPage.jsx';
+import MainPage from './pages/MainPage.jsx';
 import './App.css'; // We'll create this for basic styling
 
 /**

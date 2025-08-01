@@ -1,7 +1,7 @@
 // frontend/src/components/JobList.js
 
 import React from 'react';
-import JobItem from './JobItem';
+import JobItem from './JobItem.jsx';
 import './JobList.css';
 
 function JobList({ jobs, isLoading, error }) {

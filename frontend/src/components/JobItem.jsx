@@ -1,7 +1,7 @@
 // frontend/src/components/JobItem.js
 
 import React, { useState, useEffect } from 'react';
-import { useAuth } from '../context/AuthContext';
+import { useAuth } from '../context/AuthContext.jsx';
 import { getJobStatus, getDownloadUrl } from '../services/api';
 import './JobItem.css'; // We'll create this CSS file next
 
