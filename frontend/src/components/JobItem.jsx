@@ -1,61 +1,64 @@
-// frontend/src/components/JobItem.js
+// frontend/src/components/JobItem.jsx
 
 import React, { useState, useEffect } from 'react';
 import { useAuth } from '../context/AuthContext.jsx';
 import { getJobStatus, getDownloadUrl } from '../services/api';
-import './JobItem.css'; // We'll create this CSS file next
+import './JobItem.css';
 
-// A helper to format dates nicely
 const formatDate = (dateString) => {
     return new Date(dateString).toLocaleString();
 };
 
 function JobItem({ initialJob }) {
     const [job, setJob] = useState(initialJob);
-    const [isPolling, setIsPolling] = useState(false);
     const { token } = useAuth();
 
     useEffect(() => {
         const isRunning = job.status === 'PENDING' || job.status === 'PROGRESS';
 
-        if (isRunning && !isPolling) {
-            setIsPolling(true);
-            const intervalId = setInterval(async () => {
-                try {
-                    const updatedStatus = await getJobStatus(job.job_id, token);
-                    
-                    // Celery status can be different from our DB status, so we sync them
-                    const newStatus = updatedStatus.status;
-                    const newResultPayload = updatedStatus.result;
-
-                    setJob(prevJob => ({
-                        ...prevJob,
-                        status: newStatus,
-                        // Only update the payload if it's a final state
-                        ...(newStatus === 'SUCCESS' || newStatus === 'FAILURE' ? { result_payload: newResultPayload } : {})
-                    }));
-
-                    // If the job is finished, stop polling
-                    if (newStatus === 'SUCCESS' || newStatus === 'FAILURE') {
-                        clearInterval(intervalId);
-                        setIsPolling(false);
-                    }
-                } catch (error) {
-                    console.error(`Failed to get status for job ${job.job_id}`, error);
-                    // Stop polling on error to prevent spamming a broken endpoint
-                    clearInterval(intervalId);
-                    setIsPolling(false);
-                    setJob(prevJob => ({ ...prevJob, status: 'FAILURE', result_payload: { message: 'Error fetching status.' } }));
-                }
-            }, 5000); // Poll every 5 seconds
-
-            // Cleanup function to clear the interval when the component unmounts
-            return () => {
-                clearInterval(intervalId);
-                setIsPolling(false);
-            };
+        // Only start polling if the job is in a running state.
+        if (!isRunning) {
+            return;
         }
-    }, [job.status, job.job_id, token, isPolling]);
+
+        const intervalId = setInterval(async () => {
+            try {
+                const updatedStatus = await getJobStatus(job.job_id, token);
+                
+                const newStatus = updatedStatus.status;
+                const newResultPayload = updatedStatus.result;
+
+                // When the status changes, update the entire job object in our state.
+                // This ensures that when the job finishes, we get the final
+                // status AND the result_payload in the same update.
+                setJob(prevJob => ({
+                    ...prevJob,
+                    status: newStatus,
+                    // Only update the payload if it's a final state and the payload exists
+                    ...( (newStatus === 'SUCCESS' || newStatus === 'FAILURE') && newResultPayload 
+                         ? { result_payload: newResultPayload } 
+                         : {}
+                       )
+                }));
+
+            } catch (error) {
+                console.error(`Failed to get status for job ${job.job_id}`, error);
+                // On a polling error, we assume the job failed to prevent spamming a broken endpoint.
+                // We also stop the interval here.
+                setJob(prevJob => ({ ...prevJob, status: 'FAILURE', result_payload: { message: 'Error fetching status.' } }));
+            }
+        }, 5000); // Poll every 5 seconds
+
+        // The cleanup function is crucial. It runs when the component unmounts
+        // OR when the dependencies in the array below change.
+        return () => {
+            clearInterval(intervalId);
+        };
+        // The effect should re-run if the job's status changes.
+        // This correctly handles the transition from 'PROGRESS' to a final state,
+        // at which point the `if (!isRunning)` check will cause the effect to exit
+        // and no new interval will be created.
+    }, [job.status, job.job_id, token]);
 
     const renderStatus = () => {
         switch (job.status) {
@@ -80,6 +83,7 @@ function JobItem({ initialJob }) {
             </div>
             <div className="job-item-body">
                 <p className="job-agent-message">
+                    {/* Use the payload from the job state, which is now correctly updated */}
                     {job.result_payload?.message || 'Waiting for agent to start...'}
                 </p>
             </div>
@@ -89,15 +93,10 @@ function JobItem({ initialJob }) {
                     <a
                         href={getDownloadUrl(job.job_id)}
                         className="download-button"
-                        target="_blank" // Opens in a new tab
+                        target="_blank"
                         rel="noopener noreferrer"
-                        // To make the download work correctly, we need to send the auth token.
-                        // Since an <a> tag can't have headers, this requires a more complex solution
-                        // (like temporary download tokens) which is out of scope for this prototype.
-                        // The backend will need to handle this request, for now we assume it works.
                         onClick={(e) => {
                             e.preventDefault();
-                            // A better way for stateless apps: fetch with token, create blob URL, and click it.
                             fetch(getDownloadUrl(job.job_id), { headers: { 'Authorization': `Bearer ${token}` } })
                                 .then(res => res.blob())
                                 .then(blob => {
@@ -105,7 +104,6 @@ function JobItem({ initialJob }) {
                                     const a = document.createElement('a');
                                     a.style.display = 'none';
                                     a.href = url;
-                                    // Extract filename from the payload
                                     const filename = job.result_payload.output_path.split('/').pop();
                                     a.download = filename || 'codec_edit.otio';
                                     document.body.appendChild(a);
