@@ -1,0 +1,94 @@
+# docker-compose.yml
+
+# Use a modern version of the Docker Compose file format.
+version: '3.8'
+
+# Define all the services (containers) that make up the application.
+services:
+  # Redis: The message broker for Celery.
+  # It queues tasks from the backend for the worker to pick up.
+  redis:
+    image: "redis:alpine"
+    restart: always
+    volumes:
+      # Persist Redis data to a named volume to survive container restarts.
+      - redis_data:/data
+
+  # Backend: The FastAPI application.
+  # It handles API requests, user authentication, and dispatches jobs.
+  backend:
+    # Build the image from the Dockerfile in the current directory.
+    build: .
+    restart: always
+    # The command to start the FastAPI server using uvicorn.
+    # 0.0.0.0 makes it accessible from other containers in the network.
+    command: uvicorn codec.backend.main:app --host 0.0.0.0 --port 8000
+    volumes:
+      # Mount local directories into the container for persistent storage.
+      # This is critical for keeping user data and logs.
+      - ./codec_jobs:/app/codec_jobs
+      - ./logs:/app/logs
+      - ./codec.db:/app/codec.db
+    # Expose the backend's port 8000 to the Nginx container.
+    # This is not exposed to the host machine, only to the internal Docker network.
+    expose:
+      - 8000
+    env_file:
+      # Load environment variables (secrets) from the .env file.
+      - .env
+    depends_on:
+      # Ensure Redis is running before the backend starts.
+      - redis
+
+  # Worker: The Celery worker.
+  # It runs the AI agent and executes the long-running editing tasks.
+  worker:
+    build: .
+    restart: always
+    # The command to start the Celery worker.
+    # -A: Specifies the Celery app instance.
+    # -c 1: Sets concurrency to 1. A safe starting point for a small VPS.
+    #       Increase this number if your server has more CPU cores.
+    command: celery -A codec.backend.tasks worker --loglevel=info -c 1
+    volumes:
+      # The worker needs access to the exact same files as the backend.
+      - ./codec_jobs:/app/codec_jobs
+      - ./logs:/app/logs
+      - ./codec.db:/app/codec.db
+    env_file:
+      - .env
+    depends_on:
+      - redis
+
+  # Nginx: The web server and reverse proxy.
+  # It serves the static React app and forwards API calls to the backend.
+  nginx:
+    image: nginx:alpine
+    restart: always
+    ports:
+      # Map port 80 of the host machine to port 80 of the container.
+      # This is how users access the site from the internet.
+      - "80:80"
+    volumes:
+      # Mount the built React app into the Nginx web root.
+      - ./frontend/dist:/usr/share/nginx/html
+      # Mount our custom Nginx configuration file.
+      - ./nginx.conf:/etc/nginx/conf.d/default.conf
+    depends_on:
+      - backend
+
+  # Flower: A web-based monitoring tool for Celery.
+  # Provides a dashboard to see active, queued, and completed tasks.
+  flower:
+    image: mher/flower
+    restart: always
+    command: ["flower", "--broker=redis://redis:6379/0", "--port=5555"]
+    ports:
+      # Expose the Flower dashboard on port 5555 of the host machine.
+      - "5555:5555"
+    depends_on:
+      - redis
+
+# Define the named volumes used by the services.
+volumes:
+  redis_data:
