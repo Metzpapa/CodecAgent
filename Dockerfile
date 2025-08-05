@@ -7,11 +7,14 @@ FROM python:3.11-slim
 WORKDIR /app
 
 # 3. Install System Dependencies:
+#    - build-essential & cmake: REQUIRED for compiling Python packages like opentimelineio.
 #    - ffmpeg: For all media processing tools.
 #    - curl & nodejs: Required to build the React frontend.
 #    We combine these into a single RUN layer to optimize image size.
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
+    build-essential \
+    cmake \
     ffmpeg \
     curl \
     && curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \

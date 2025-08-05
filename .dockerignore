@@ -1,0 +1,32 @@
+# Ignore .env file
+.env
+
+# Ignore Python virtual environment
+.venv/
+
+# Ignore Node.js dependencies (they will be installed inside the container)
+frontend/node_modules/
+
+# Ignore frontend build output if it exists locally
+frontend/dist/
+
+# Ignore Python cache files
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Ignore local data, logs, and artifacts
+logs/
+codec.db
+*.log
+codec_jobs/
+
+# Ignore IDE and OS-specific files
+.vscode/
+.idea/
+.DS_Store
+
+# Ignore git files
+.git/
+.gitignore
