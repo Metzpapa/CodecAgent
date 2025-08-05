@@ -1,4 +1,4 @@
-// frontend/src/context/AuthContext.js
+// frontend/src/context/AuthContext.jsx
 
 import React, { createContext, useState, useEffect, useContext } from 'react';
 import { jwtDecode } from 'jwt-decode';
@@ -39,43 +39,77 @@ export const AuthProvider = ({ children }) => {
             localStorage.setItem('googleIdToken', idToken);
         };
 
-        // Initialize the Google Sign-In client
-        window.google.accounts.id.initialize({
-            client_id: googleClientId,
-            callback: handleCredentialResponse,
-        });
-
-        // Check if a token already exists in localStorage from a previous session
-        const storedToken = localStorage.getItem('googleIdToken');
-        if (storedToken) {
+        // This function contains all the logic that depends on `window.google`.
+        // It will only be called after we are sure the GSI script has loaded.
+        const initializeGoogleSignIn = () => {
             try {
-                const decodedToken = jwtDecode(storedToken);
-                // Check if the token is expired
-                if (decodedToken.exp * 1000 > Date.now()) {
-                    setUser(decodedToken);
-                    setToken(storedToken);
-                } else {
-                    // Token is expired, clear it
-                    localStorage.removeItem('googleIdToken');
+                // Initialize the Google Sign-In client
+                window.google.accounts.id.initialize({
+                    client_id: googleClientId,
+                    callback: handleCredentialResponse,
+                });
+
+                // Check if a token already exists in localStorage from a previous session
+                const storedToken = localStorage.getItem('googleIdToken');
+                if (storedToken) {
+                    const decodedToken = jwtDecode(storedToken);
+                    // Check if the token is expired
+                    if (decodedToken.exp * 1000 > Date.now()) {
+                        setUser(decodedToken);
+                        setToken(storedToken);
+                    } else {
+                        // Token is expired, clear it
+                        localStorage.removeItem('googleIdToken');
+                    }
                 }
             } catch (error) {
-                console.error("Error decoding stored token:", error);
+                console.error("Error initializing Google Sign-In or decoding token:", error);
+                // Clear potentially corrupt token
                 localStorage.removeItem('googleIdToken');
+            } finally {
+                // Crucially, we only stop loading after initialization is attempted.
+                setIsLoading(false);
             }
-        }
-        setIsLoading(false); // Finished loading auth state
+        };
 
-    }, []);
+        // Check if the Google script is already loaded (e.g., from cache on reload)
+        if (window.google) {
+            console.log("Google script already loaded. Initializing...");
+            initializeGoogleSignIn();
+        } else {
+            // If not, wait for the entire window to load. The `defer` attribute on the
+            // script tag in index.html ensures it will run before the `load` event.
+            console.log("Google script not loaded yet. Waiting for window.onload...");
+            window.addEventListener('load', initializeGoogleSignIn);
+
+            // Cleanup the event listener when the component unmounts
+            return () => {
+                window.removeEventListener('load', initializeGoogleSignIn);
+            };
+        }
+
+    }, []); // This effect should still only run once on mount.
 
     // Function to render the Google Sign-In button
     const renderLoginButton = (elementId) => {
-        if (window.google && window.google.accounts && window.google.accounts.id) {
-            window.google.accounts.id.renderButton(
-                document.getElementById(elementId),
-                { theme: "outline", size: "large" } // Customize the button's appearance
-            );
+        // This function might be called by a component before the GSI script is ready.
+        // We add a small delay and retry to make it more robust.
+        const attemptRender = () => {
+            if (window.google && window.google.accounts && window.google.accounts.id) {
+                window.google.accounts.id.renderButton(
+                    document.getElementById(elementId),
+                    { theme: "outline", size: "large" } // Customize the button's appearance
+                );
+            } else {
+                console.error("Google Identity Services is not available.");
+            }
+        };
+
+        if (window.google) {
+            attemptRender();
         } else {
-            console.error("Google Identity Services is not available.");
+            // If the script isn't loaded at all yet, wait a moment and try again.
+            setTimeout(attemptRender, 500);
         }
     };
 
@@ -85,7 +119,7 @@ export const AuthProvider = ({ children }) => {
         setToken(null);
         localStorage.removeItem('googleIdToken');
         // Optional: Revoke the token on Google's side
-        if (token) {
+        if (token && window.google) {
             window.google.accounts.id.revoke(user.email, done => {
                 console.log('User token revoked.');
             });
