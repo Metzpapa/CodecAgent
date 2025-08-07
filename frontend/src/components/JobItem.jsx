@@ -6,6 +6,7 @@ import { getJobStatus, getDownloadUrl } from '../services/api';
 import './JobItem.css';
 
 const formatDate = (dateString) => {
+    if (!dateString) return 'N/A';
     return new Date(dateString).toLocaleString();
 };
 
@@ -23,41 +24,33 @@ function JobItem({ initialJob }) {
 
         const intervalId = setInterval(async () => {
             try {
-                const updatedStatus = await getJobStatus(job.job_id, token);
+                // This API endpoint now returns the full job object from the DB.
+                const updatedJobData = await getJobStatus(job.job_id, token);
                 
-                const newStatus = updatedStatus.status;
-                const newResultPayload = updatedStatus.result;
-
-                // When the status changes, update the entire job object in our state.
-                // This ensures that when the job finishes, we get the final
-                // status AND the result_payload in the same update.
+                // Simply update the entire job state with the new data from the DB.
+                // This is simpler and ensures all fields (status, result_payload) are in sync.
+                // The API result has a 'result' key which maps to our 'result_payload'.
                 setJob(prevJob => ({
                     ...prevJob,
-                    status: newStatus,
-                    // Only update the payload if it's a final state and the payload exists
-                    ...( (newStatus === 'SUCCESS' || newStatus === 'FAILURE') && newResultPayload 
-                         ? { result_payload: newResultPayload } 
-                         : {}
-                       )
+                    status: updatedJobData.status,
+                    result_payload: updatedJobData.result,
                 }));
 
             } catch (error) {
                 console.error(`Failed to get status for job ${job.job_id}`, error);
                 // On a polling error, we assume the job failed to prevent spamming a broken endpoint.
-                // We also stop the interval here.
                 setJob(prevJob => ({ ...prevJob, status: 'FAILURE', result_payload: { message: 'Error fetching status.' } }));
             }
         }, 5000); // Poll every 5 seconds
 
         // The cleanup function is crucial. It runs when the component unmounts
-        // OR when the dependencies in the array below change.
+        // or when the dependencies in the array below change.
         return () => {
             clearInterval(intervalId);
         };
-        // The effect should re-run if the job's status changes.
-        // This correctly handles the transition from 'PROGRESS' to a final state,
-        // at which point the `if (!isRunning)` check will cause the effect to exit
-        // and no new interval will be created.
+        // The effect re-runs if the job's status changes. This correctly handles
+        // the transition from a running state to a final state, at which point
+        // the `if (!isRunning)` check will stop the polling.
     }, [job.status, job.job_id, token]);
 
     const renderStatus = () => {
@@ -96,9 +89,14 @@ function JobItem({ initialJob }) {
                         target="_blank"
                         rel="noopener noreferrer"
                         onClick={(e) => {
+                            // This fetch-based download is the correct way to handle
+                            // authenticated downloads, as it allows sending the Auth header.
                             e.preventDefault();
                             fetch(getDownloadUrl(job.job_id), { headers: { 'Authorization': `Bearer ${token}` } })
-                                .then(res => res.blob())
+                                .then(res => {
+                                    if (!res.ok) throw new Error(`Download failed: ${res.statusText}`);
+                                    return res.blob();
+                                })
                                 .then(blob => {
                                     const url = window.URL.createObjectURL(blob);
                                     const a = document.createElement('a');
@@ -109,6 +107,11 @@ function JobItem({ initialJob }) {
                                     document.body.appendChild(a);
                                     a.click();
                                     window.URL.revokeObjectURL(url);
+                                    a.remove();
+                                })
+                                .catch(err => {
+                                    console.error("Download error:", err);
+                                    // Optionally, show an error to the user here.
                                 });
                         }}
                     >

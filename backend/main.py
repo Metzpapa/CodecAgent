@@ -10,38 +10,30 @@ from pathlib import Path
 from typing import List, Dict, Optional
 
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException, BackgroundTasks, Depends
-from fastapi.responses import JSONResponse, FileResponse
+from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from datetime import datetime
 
-# --- MODIFIED: Import new modules for DB and Auth ---
+# --- Local Application Imports ---
 from . import database
-from . import auth
-from .database import SessionLocal, engine, Job, get_db
+from .database import Job, get_db
 from .auth import get_current_user_id
-
-# We will create tasks.py next. This import prepares for that.
-# It imports the Celery application instance and the task function we will define.
 from .tasks import celery_app, run_editing_job
+
 # --- Configuration ---
 # Define a base directory where all job-related files will be stored.
-# Using pathlib.Path makes the code work on Windows, macOS, and Linux.
 JOBS_BASE_DIR = Path("codec_jobs")
 JOBS_BASE_DIR.mkdir(exist_ok=True)
 
-# --- REMOVED: The in-memory job_store is now replaced by the database ---
-# job_store: Dict[str, Dict] = {}
-
-# --- NEW: Initialize database tables on startup ---
-database.Base.metadata.create_all(bind=engine)
+# Initialize database tables on module load.
+database.Base.metadata.create_all(bind=database.engine)
 
 
 # --- FastAPI App Initialization ---
 app = FastAPI(title="Codec AI Video Editing Backend")
 
-# --- NEW: Add startup event to initialize the database ---
 @app.on_event("startup")
 def on_startup():
     """
@@ -52,16 +44,13 @@ def on_startup():
 
 
 # --- CORS Middleware ---
-# The front-end website will run on a different "origin" (e.g., http://localhost:3000)
-# than the API (e.g., http://localhost:8000). Browsers block requests between
-# different origins by default for security. This middleware tells the browser
-# that it's safe to allow requests from our front-end.
+# Allows the frontend (running on a different origin) to communicate with this API.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # For development, we allow any origin.
+    allow_origins=["*"],  # For development, allow any origin.
     allow_credentials=True,
-    allow_methods=["*"],  # Allow all HTTP methods (GET, POST, etc.)
-    allow_headers=["*"],  # Allow all HTTP headers.
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 
@@ -73,7 +62,7 @@ def cleanup_job_files(job_dir: Path):
         shutil.rmtree(job_dir)
 
 
-# --- NEW: Pydantic model for the /jobs response ---
+# --- Pydantic Models for API Responses ---
 class JobResponse(BaseModel):
     job_id: str
     prompt: str
@@ -82,7 +71,7 @@ class JobResponse(BaseModel):
     result_payload: Optional[dict] = None
 
     class Config:
-        from_attributes = True # Replaces orm_mode = True in Pydantic v2
+        from_attributes = True # Pydantic v2 equivalent of orm_mode
 
 
 # --- API Endpoints ---
@@ -93,7 +82,6 @@ def read_root():
     return {"message": "Codec AI Backend is running."}
 
 
-# --- NEW: Endpoint to list all jobs for the current user ---
 @app.get("/jobs", response_model=List[JobResponse])
 def get_jobs_for_user(
     db: Session = Depends(get_db),
@@ -112,17 +100,14 @@ async def create_job(
     background_tasks: BackgroundTasks,
     prompt: str = Form(...),
     files: List[UploadFile] = File(...),
-    # --- MODIFIED: Add dependencies for database and authentication ---
     db: Session = Depends(get_db),
     user_id: str = Depends(get_current_user_id)
 ):
     """
-    This is the main endpoint to start a new video editing job.
-    It's designed to be fast and non-blocking.
-
+    Starts a new video editing job. It's non-blocking.
     1. Creates a unique job ID and a dedicated directory for its assets.
     2. Saves the user's uploaded files into that directory.
-    3. Saves the job metadata to the database, linking it to the user.
+    3. Creates a new job record in the database, linking it to the user.
     4. Dispatches the actual editing task to a background Celery worker.
     5. Immediately returns the job ID to the client.
     """
@@ -148,7 +133,7 @@ async def create_job(
         cleanup_job_files(job_dir)
         raise HTTPException(status_code=500, detail=f"Failed to set up job environment: {e}")
 
-    # --- MODIFIED: Create a new Job record in the database ---
+    # Create a new Job record in the database.
     new_job = Job(
         job_id=job_id,
         user_id=user_id,
@@ -172,56 +157,43 @@ async def create_job(
 @app.get("/jobs/{job_id}/status")
 def get_job_status(
     job_id: str,
-    # --- MODIFIED: Add dependencies for database and authentication ---
     db: Session = Depends(get_db),
     user_id: str = Depends(get_current_user_id)
 ):
     """
     Allows the front-end to poll for the status of a specific job.
-    It first verifies the user owns the job, then checks the Celery backend.
+    It reads directly from the database, which is the single source of truth
+    updated by the Celery worker. This endpoint is decoupled from the Celery
+    result backend.
     """
-    # --- NEW: Ownership check ---
     job = db.query(Job).filter(Job.job_id == job_id, Job.user_id == user_id).first()
     if not job:
         raise HTTPException(status_code=404, detail="Job not found or you do not have permission to view it.")
 
-    task_result = celery_app.AsyncResult(job_id)
-    status = task_result.status
-    result = task_result.result
-
-    if isinstance(result, Exception):
-        result = str(result)
-
-    return {"job_id": job_id, "status": status, "result": result}
+    # The worker updates the DB, so we just return the DB state. No Celery call needed.
+    return {"job_id": job.job_id, "status": job.status, "result": job.result_payload}
 
 
 @app.get("/jobs/{job_id}/download")
 async def download_result(
     job_id: str,
     background_tasks: BackgroundTasks,
-    # --- MODIFIED: Add dependencies for database and authentication ---
     db: Session = Depends(get_db),
     user_id: str = Depends(get_current_user_id)
 ):
     """
     Serves the final output file for a completed job, if one exists.
-    It first verifies the user owns the job.
+    It verifies ownership and reads the result information directly from the database.
     Once the download is initiated, it schedules the job's files for cleanup.
     """
-    # --- NEW: Ownership check ---
     job = db.query(Job).filter(Job.job_id == job_id, Job.user_id == user_id).first()
     if not job:
         raise HTTPException(status_code=404, detail="Job not found or you do not have permission to view it.")
 
-    task_result = celery_app.AsyncResult(job_id)
+    if job.status != 'SUCCESS':
+        raise HTTPException(status_code=400, detail=f"Job is not successfully completed. Current status: {job.status}")
 
-    if not task_result.ready():
-        raise HTTPException(status_code=400, detail=f"Job is not complete. Current status: {task_result.status}")
-
-    if task_result.failed():
-        raise HTTPException(status_code=404, detail=f"Job failed and has no output file. Error: {task_result.result}")
-
-    result_info = task_result.result
+    result_info = job.result_payload
     if not isinstance(result_info, dict):
         raise HTTPException(status_code=404, detail="Job result is not in the expected format.")
 
@@ -235,6 +207,7 @@ async def download_result(
     if not output_file_path.is_file():
         raise HTTPException(status_code=404, detail=f"Output file not found on server at path: {output_file_path}")
 
+    # Find the parent job directory to schedule for cleanup
     job_dir = None
     for p in output_file_path.parents:
         if p.name == job_id:
