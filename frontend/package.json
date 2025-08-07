@@ -10,8 +10,8 @@
     "preview": "vite preview",
     "// --- PROCESS MANAGEMENT SCRIPTS ---": "",
     "dev:ui": "vite",
-    "dev:api": "cd .. && ../.venv/bin/uvicorn codec.backend.main:app --reload",
-    "dev:worker": "cd .. && ../.venv/bin/celery -A codec.backend.tasks worker --loglevel=info",
+    "dev:api": "cd .. && uvicorn backend.main:app --reload",
+    "dev:worker": "cd .. && celery -A backend.tasks worker --loglevel=info -c 1",
     "dev:all": "concurrently \"npm:dev:ui\" \"npm:dev:api\" \"npm:dev:worker\""
   },
   "dependencies": {
