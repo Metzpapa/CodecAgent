@@ -31,7 +31,17 @@ RUN pip install --no-cache-dir -r requirements.txt
 #    Copy the entire project directory into the container's working directory.
 COPY . .
 
-# 6. Build Frontend:
+# --- START: INJECT BUILD-TIME VARIABLE FOR VITE ---
+# 6a. Accept a build-time argument for the frontend API URL.
+#     This value will be passed in from docker-compose.yml.
+ARG VITE_API_BASE_URL_ARG
+
+# 6b. Set it as an environment variable that the `npm run build` process can access.
+#     Vite will automatically embed this into the final JS bundle.
+ENV VITE_API_BASE_URL=${VITE_API_BASE_URL_ARG}
+# --- END: INJECT BUILD-TIME VARIABLE FOR VITE ---
+
+# 6c. Build Frontend:
 #    Navigate into the frontend directory, install npm packages, and run the
 #    build script. This creates the static `frontend/dist` directory which
 #    Nginx will serve.

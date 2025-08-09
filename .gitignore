@@ -6,8 +6,7 @@
 # Contains sensitive keys like API keys and database URLs.
 .env
 .env.*
-!.env.example
-
+!.env.template
 # Local Database
 # The SQLite database file should not be versioned.
 codec.db

@@ -54,7 +54,7 @@ class Agent:
         # No more provider switching logic. We are all-in on OpenAI.
         logging.info("Using OpenAI Responses API (Stateful).")
         self.client = openai.OpenAI(api_key=api_key)
-        self.model_name = os.environ.get("OPENAI_MODEL_NAME", "gpt-4.1-mini")
+        self.model_name = os.environ.get("OPENAI_MODEL_NAME", "gpt-5")
 
         logging.info("Loading tools...")
         self.tools = self._load_tools()
