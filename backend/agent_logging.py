@@ -5,15 +5,24 @@ from pathlib import Path
 from datetime import datetime
 from typing import Any, List, Dict, Optional
 
-# A helper to pretty-print JSON for the readable log
+# --- MODIFIED: A more robust pretty-printing helper ---
 def _pretty_json(data: Any) -> str:
-    try:
-        # Assuming data is a string containing JSON
-        parsed = json.loads(data)
-        return json.dumps(parsed, indent=2, ensure_ascii=False)
-    except (json.JSONDecodeError, TypeError):
-        # If it's not valid JSON or not a string, return as is
-        return str(data)
+    """
+    Takes a Python object or a JSON string and returns a
+    nicely formatted JSON string.
+    """
+    if isinstance(data, str):
+        try:
+            # If it's a string, parse it into a Python object first
+            data = json.loads(data)
+        except (json.JSONDecodeError, TypeError):
+            # If it's not a valid JSON string, return it as is.
+            return str(data)
+    
+    # Now, `data` is guaranteed to be a Python object (dict, list, etc.)
+    # Dump it to a nicely formatted string.
+    return json.dumps(data, indent=2, ensure_ascii=False)
+
 
 class AgentContextLogger:
     """
@@ -64,8 +73,12 @@ class AgentContextLogger:
         self.raw_log_file.write(json.dumps(log_entry, ensure_ascii=False) + "\n")
 
     def log_initial_setup(self, model_name: str, system_prompt: str, tools: List[Dict[str, Any]]):
-        """Logs the one-time setup information for the session."""
-        # --- Raw Log ---
+        """
+        Logs the one-time setup information for the session.
+        Writes the full header to the file log, but only a concise
+        message to the real-time stream.
+        """
+        # --- Raw Log (Always gets the full data) ---
         self._write_raw("initial_setup", {
             "job_id": self.job_id,
             "model": model_name,
@@ -73,7 +86,7 @@ class AgentContextLogger:
             "tools": tools
         })
 
-        # --- Readable Log ---
+        # --- Readable Log File (Gets the full header) ---
         header = [
             "======================================================================",
             "                    CODEC AGENT SESSION LOG",
@@ -95,11 +108,12 @@ class AgentContextLogger:
             header.append(f"  Description: {tool.get('description', 'N/A')}")
             params = tool.get('parameters', {})
             # Don't show empty properties dict for cleaner output
-            if 'properties' in params and params['properties']:
+            if 'properties' in params and params.get('properties'):
+                 # --- THIS LINE NOW WORKS CORRECTLY ---
                  header.append(f"  Parameters:\n{_pretty_json(params)}")
             else:
                 header.append("  Parameters: {}")
-            header.append("") # Spacer line
+            header.append("")
 
         header.extend([
             "======================================================================",
@@ -107,7 +121,15 @@ class AgentContextLogger:
             "======================================================================"
         ])
         
-        self._write_readable("\n".join(header))
+        self.readable_log_file.write("\n".join(header))
+
+        # --- Real-time Stream (Gets a concise message) ---
+        if self.stream_logger:
+            self.stream_logger.info("======================================================================")
+            self.stream_logger.info(f"AGENT SESSION STARTING FOR JOB: {self.job_id}")
+            self.stream_logger.info(f"Full logs are being written to: logs/{self.job_id}.agent.readable.log")
+            self.stream_logger.info("======================================================================")
+
 
     def log_user_prompt(self, prompt: str):
         """Logs the initial user request."""
@@ -116,14 +138,11 @@ class AgentContextLogger:
 
     def log_model_response(self, response: Any):
         """Logs the model's response, which can be a mix of text and tool calls."""
-        # The raw log gets the full, unprocessed response object
         self._write_raw("model_response_object", {"response": response.model_dump()})
 
         for item in response.output:
-            # Each item in the output list is also logged raw
             self._write_raw("model_output_item", {"item": item.model_dump()})
 
-            # And then formatted for the readable log
             if item.type == 'message':
                 text_content = "".join([c.text for c in item.content if hasattr(c, 'text')])
                 self._write_readable(f"\n\nModel: {text_content.strip()}")
@@ -140,7 +159,6 @@ class AgentContextLogger:
         """Logs the output from a tool execution."""
         self._write_raw("tool_result", {"tool_name": tool_name, "output": result_string})
         
-        # Indent the result string for readability
         indented_result = "\n".join([f"  {line}" for line in result_string.strip().split('\n')])
         self._write_readable(f"\n\nTool Result:\n{indented_result}")
 
