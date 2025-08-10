@@ -97,7 +97,8 @@ def run_editing_job(self, job_id: str, prompt: str, assets_directory: str, outpu
         update_job_in_db(job_id, "PROGRESS")
 
         session_state = State(assets_directory=assets_directory)
-        video_agent = Agent(state=session_state)
+        # +++ CHANGE: Pass job_id to the Agent for clean logging +++
+        video_agent = Agent(state=session_state, job_id=job_id)
 
         logger.info("Agent initialized. Starting main execution loop...")
         self.update_state(state='PROGRESS', meta={'status': 'Agent is processing the request...'})

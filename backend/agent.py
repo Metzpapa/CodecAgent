@@ -19,6 +19,8 @@ from .state import State
 from .tools.base import BaseTool
 # +++ NEW: Import the custom exception for clean job termination +++
 from .tools.finish_job import JobFinishedException
+# +++ NEW: Import the context logger +++
+from .agent_logging import AgentContextLogger
 
 
 SYSTEM_PROMPT_TEMPLATE = """
@@ -38,7 +40,7 @@ class Agent:
     to increase prototyping velocity and reduce complexity.
     """
 
-    def __init__(self, state: State):
+    def __init__(self, state: State, job_id: str | None = None):
         """
         Initializes the agent, setting up the OpenAI client and loading all
         available tools from the `tools` directory.
@@ -58,7 +60,12 @@ class Agent:
 
         logging.info("Loading tools...")
         self.tools = self._load_tools()
+        # +++ NEW: Pre-compute the tools payload to log it accurately +++
+        self.openai_tools_payload = [self._tool_to_openai_tool(t) for t in self.tools.values()]
         logging.info(f"Loaded {len(self.tools)} tools: {', '.join(self.tools.keys())}")
+
+        # +++ NEW: Initialize the clean context logger +++
+        self.context_logger = AgentContextLogger(job_id) if job_id else None
 
     def _load_tools(self) -> Dict[str, BaseTool]:
         """
@@ -111,6 +118,17 @@ class Agent:
         current_api_input: List[Dict[str, Any]] = [{"role": "user", "content": [{"type": "input_text", "text": prompt}]}]
         self.state.history.extend(current_api_input)
 
+        # +++ NEW: Write the header to the clean log once +++
+        final_system_prompt = SYSTEM_PROMPT_TEMPLATE.format(
+            user_request=self.state.initial_prompt
+        )
+        if self.context_logger:
+            self.context_logger.write_header(
+                model=self.model_name,
+                system_instructions=final_system_prompt,
+                tools=self.openai_tools_payload
+            )
+
         # This loop handles a sequence of tool calls within a single user request.
         while True:
             final_system_prompt = SYSTEM_PROMPT_TEMPLATE.format(
@@ -119,11 +137,19 @@ class Agent:
 
             logging.info(f"Sending request to OpenAI... (Previous ID: {self.state.last_response_id})")
             
+            # +++ NEW: Log the exact request we're about to send +++
+            if self.context_logger:
+                self.context_logger.log_request(
+                    previous_response_id=self.state.last_response_id,
+                    input_payload=current_api_input,
+                    local_history_snapshot=self.state.history
+                )
+
             try:
                 response = self.client.responses.create(
                     model=self.model_name,
                     input=current_api_input,
-                    tools=[self._tool_to_openai_tool(t) for t in self.tools.values()],
+                    tools=self.openai_tools_payload, # Use pre-computed payload
                     instructions=final_system_prompt,
                     previous_response_id=self.state.last_response_id,
                 )
@@ -135,6 +161,10 @@ class Agent:
             # Save the ID of this response to use in the next call.
             self.state.last_response_id = response.id
             
+            # +++ NEW: Log the raw response object +++
+            if self.context_logger:
+                self.context_logger.log_response(response)
+
             # Add the raw response output to our local history for context and debugging.
             self.state.history.extend([item.to_dict() for item in response.output])
 
@@ -189,7 +219,7 @@ class Agent:
                 })
 
             # The input for the next iteration of the loop starts with the tool results.
-            current_api_input = tool_outputs_for_api
+            next_api_input = list(tool_outputs_for_api) # shallow copy
             
             # If any tool generated new files for the model to see, we create a new 'user' message.
             if self.state.new_file_ids_for_model:
@@ -199,7 +229,16 @@ class Agent:
                     for file_id in self.state.new_file_ids_for_model
                 ]
                 # This new user message is added to the list of inputs for the next API call.
-                current_api_input.append({"role": "user", "content": multimodal_content})
+                next_api_input.append({"role": "user", "content": multimodal_content})
+
+            # +++ NEW: Log the exact tool outputs and the next input we will send +++
+            if self.context_logger:
+                self.context_logger.log_tool_outputs_and_next_input(
+                    function_call_outputs=tool_outputs_for_api,
+                    new_file_ids_for_model=list(self.state.new_file_ids_for_model),
+                    next_input_payload=next_api_input
+                )
 
             # Add the inputs for the next turn to our history log.
+            current_api_input = next_api_input
             self.state.history.extend(current_api_input)
