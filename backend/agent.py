@@ -9,7 +9,7 @@ import pprint
 import logging
 from typing import Dict, List, Any
 
-# --- MODIFIED: Direct OpenAI import, no more abstractions ---
+# Direct OpenAI import
 import openai
 from openai.types.responses import ResponseFunctionToolCall
 
@@ -17,10 +17,8 @@ from openai.types.responses import ResponseFunctionToolCall
 from . import tools
 from .state import State
 from .tools.base import BaseTool
-# +++ NEW: Import the custom exception for clean job termination +++
 from .tools.finish_job import JobFinishedException
-# +++ NEW: Import the context logger +++
-from .agent_logging import AgentContextLogger
+from .agent_logging import AgentContextLogger # <-- Import the new logger
 
 
 SYSTEM_PROMPT_TEMPLATE = """
@@ -40,42 +38,43 @@ class Agent:
     to increase prototyping velocity and reduce complexity.
     """
 
-    def __init__(self, state: State, job_id: str | None = None):
+    def __init__(self, state: State, context_logger: AgentContextLogger):
         """
         Initializes the agent, setting up the OpenAI client and loading all
         available tools from the `tools` directory.
+
+        Args:
+            state: The current session state object.
+            context_logger: The logger instance for this specific job session.
         """
         self.state = state
+        self.context_logger = context_logger # <-- Store the new logger
+
         api_key = os.environ.get("OPENAI_API_KEY")
         if not api_key:
             error_msg = "OPENAI_API_KEY is not set. Please add it to your .env file or set it as an environment variable."
-            logging.error(error_msg)
+            # Use a standard logger for this critical startup error
+            logging.critical(error_msg)
             raise ValueError(error_msg)
 
-        # --- MODIFIED: Directly initialize the OpenAI client ---
-        # No more provider switching logic. We are all-in on OpenAI.
+        # Directly initialize the OpenAI client
         logging.info("Using OpenAI Responses API (Stateful).")
         self.client = openai.OpenAI(api_key=api_key)
-        self.model_name = os.environ.get("OPENAI_MODEL_NAME", "gpt-5")
+        self.model_name = os.environ.get("OPENAI_MODEL_NAME", "gpt-4.1-vision")
 
         logging.info("Loading tools...")
         self.tools = self._load_tools()
-        # +++ NEW: Pre-compute the tools payload to log it accurately +++
         self.openai_tools_payload = [self._tool_to_openai_tool(t) for t in self.tools.values()]
         logging.info(f"Loaded {len(self.tools)} tools: {', '.join(self.tools.keys())}")
 
-        # +++ NEW: Initialize the clean context logger +++
-        self.context_logger = AgentContextLogger(job_id) if job_id else None
 
     def _load_tools(self) -> Dict[str, BaseTool]:
         """
         Dynamically discovers and loads all tool classes from the `tools` directory.
-        The provider-specific filter has been removed as we only support OpenAI now.
         """
         loaded_tools = {}
         for _, module_name, _ in pkgutil.iter_modules(tools.__path__, tools.__name__ + "."):
-            # Explicitly skip the base class and the old, now-deleted export tool
-            if module_name.endswith(".base") or module_name.endswith(".export_timeline"):
+            if module_name.endswith(".base"):
                 continue
             
             module = importlib.import_module(module_name)
@@ -91,7 +90,6 @@ class Agent:
         required by the OpenAI Responses API.
         """
         schema = tool.args_schema.model_json_schema()
-        # The 'title' field is not expected by the OpenAI API, so we remove it.
         schema.pop('title', None)
         return {
             "type": "function",
@@ -107,78 +105,52 @@ class Agent:
         OpenAI API, including all necessary tool calls.
         It will exit cleanly when the `finish_job` tool raises a JobFinishedException.
         """
-        logging.info("\n--- User Prompt ---")
-        logging.info(prompt)
-        logging.info("-------------------\n")
-
         if self.state.initial_prompt is None:
             self.state.initial_prompt = prompt
 
-        # For the first turn, the input is just the user's prompt.
-        current_api_input: List[Dict[str, Any]] = [{"role": "user", "content": [{"type": "input_text", "text": prompt}]}]
-        self.state.history.extend(current_api_input)
-
-        # +++ NEW: Write the header to the clean log once +++
-        final_system_prompt = SYSTEM_PROMPT_TEMPLATE.format(
-            user_request=self.state.initial_prompt
+        # --- Initial Logging using the new Context Logger ---
+        final_system_prompt = SYSTEM_PROMPT_TEMPLATE.format(user_request=self.state.initial_prompt)
+        self.context_logger.log_initial_setup(
+            model_name=self.model_name,
+            system_prompt=final_system_prompt,
+            tools=self.openai_tools_payload
         )
-        if self.context_logger:
-            self.context_logger.write_header(
-                model=self.model_name,
-                system_instructions=final_system_prompt,
-                tools=self.openai_tools_payload
-            )
+        self.context_logger.log_user_prompt(prompt)
+
+        # For the first turn, the input is just the user's prompt.
+        current_api_input: List[Dict[str, Any]] = [{"role": "user", "content": prompt}]
+        self.state.history.extend(current_api_input)
 
         # This loop handles a sequence of tool calls within a single user request.
         while True:
-            final_system_prompt = SYSTEM_PROMPT_TEMPLATE.format(
-                user_request=self.state.initial_prompt
-            )
-
-            logging.info(f"Sending request to OpenAI... (Previous ID: {self.state.last_response_id})")
-            
-            # +++ NEW: Log the exact request we're about to send +++
-            if self.context_logger:
-                self.context_logger.log_request(
-                    previous_response_id=self.state.last_response_id,
-                    input_payload=current_api_input,
-                    local_history_snapshot=self.state.history
-                )
-
             try:
                 response = self.client.responses.create(
                     model=self.model_name,
                     input=current_api_input,
-                    tools=self.openai_tools_payload, # Use pre-computed payload
+                    tools=self.openai_tools_payload,
                     instructions=final_system_prompt,
                     previous_response_id=self.state.last_response_id,
                 )
             except openai.APIError as e:
                 logging.error(f"OpenAI API Error: {e}", exc_info=True)
                 pprint.pprint(e.response.json())
+                # Log the error to the readable log as well
+                self.context_logger.log_tool_result("OpenAI_API", f"FATAL ERROR: {e}")
                 break
 
             # Save the ID of this response to use in the next call.
             self.state.last_response_id = response.id
             
-            # +++ NEW: Log the raw response object +++
-            if self.context_logger:
-                self.context_logger.log_response(response)
+            # --- Log the entire model response (text and tool calls) ---
+            self.context_logger.log_model_response(response)
 
             # Add the raw response output to our local history for context and debugging.
-            self.state.history.extend([item.to_dict() for item in response.output])
+            self.state.history.extend([item.model_dump() for item in response.output])
 
-            # Extract text and tool calls from the response output
-            text_outputs = [
-                "".join([c.text for c in item.content if hasattr(c, 'text')])
-                for item in response.output if item.type == 'message'
+            # Extract tool calls from the response output
+            tool_calls: List[ResponseFunctionToolCall] = [
+                item for item in response.output if item.type == 'function_call'
             ]
-            tool_calls: List[ResponseFunctionToolCall] = [item for item in response.output if item.type == 'function_call']
-
-            if text_outputs:
-                full_text = "\n".join(text_outputs)
-                logging.info(f"\nAgent says: {full_text}")
-                logging.info("------------------------")
 
             if not tool_calls:
                 logging.warning("\nAgent has finished its turn without calling finish_job. This may be an error.")
@@ -186,32 +158,27 @@ class Agent:
 
             # --- Execute Tools and Prepare for Next API Call ---
             tool_outputs_for_api = []
-            # Clear any multimodal data from the previous tool call cycle.
-            self.state.new_file_ids_for_model = []
+            self.state.new_file_ids_for_model = [] # Clear any multimodal data from the previous cycle.
 
             for call in tool_calls:
-                logging.info(f"Agent wants to call tool: {call.name}({call.arguments})")
                 tool_to_execute = self.tools.get(call.name)
                 tool_output_string = f"Error: Tool '{call.name}' not found."
 
                 if tool_to_execute:
                     try:
-                        # The arguments are a JSON string, so we parse them.
                         parsed_args = json.loads(call.arguments)
                         validated_args = tool_to_execute.args_schema(**parsed_args)
-                        # Pass the OpenAI client directly to tools that need it (e.g., for file uploads)
-                        # The tool now returns a simple string and modifies state for multimodal output.
                         tool_output_string = tool_to_execute.execute(self.state, validated_args, self.client)
-                    # +++ NEW: Catch the JobFinishedException and re-raise it to exit the loop +++
                     except JobFinishedException:
                         logging.info("`finish_job` tool called. Propagating signal to terminate.")
-                        raise # Re-raise the exception to be caught by the Celery task
+                        raise # Re-raise to be caught by the Celery task
                     except Exception as e:
                         tool_output_string = f"Error executing tool '{call.name}': {e}"
                         logging.error(f"Error during tool execution for '{call.name}'", exc_info=True)
 
+                # --- Log the result of this specific tool call ---
+                self.context_logger.log_tool_result(call.name, tool_output_string)
 
-                logging.info(f"Tool Result:\n{tool_output_string}\n")
                 tool_outputs_for_api.append({
                     "type": "function_call_output",
                     "call_id": call.call_id,
@@ -223,7 +190,6 @@ class Agent:
             
             # If any tool generated new files for the model to see, we create a new 'user' message.
             if self.state.new_file_ids_for_model:
-                logging.info("Presenting new multimodal information to the agent.")
                 multimodal_content = [
                     {"type": "input_image", "file_id": file_id}
                     for file_id in self.state.new_file_ids_for_model
@@ -231,14 +197,6 @@ class Agent:
                 # This new user message is added to the list of inputs for the next API call.
                 next_api_input.append({"role": "user", "content": multimodal_content})
 
-            # +++ NEW: Log the exact tool outputs and the next input we will send +++
-            if self.context_logger:
-                self.context_logger.log_tool_outputs_and_next_input(
-                    function_call_outputs=tool_outputs_for_api,
-                    new_file_ids_for_model=list(self.state.new_file_ids_for_model),
-                    next_input_payload=next_api_input
-                )
-
-            # Add the inputs for the next turn to our history log.
+            # Add the inputs for the next turn to our history log and set it as the current input.
             current_api_input = next_api_input
             self.state.history.extend(current_api_input)
