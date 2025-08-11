@@ -1,9 +1,9 @@
-// frontend/src/components/CreateJobForm.js
+// frontend/src/components/CreateJobForm.jsx
 
 import React, { useState, useCallback, useRef } from 'react';
 import { useAuth } from '../context/AuthContext.jsx';
 import { createJob } from '../services/api';
-import './CreateJobForm.css';
+import './CreateJobForm.css'; // This CSS will be updated next
 
 function CreateJobForm({ onJobCreated }) {
     const [prompt, setPrompt] = useState('');
@@ -15,7 +15,7 @@ function CreateJobForm({ onJobCreated }) {
     const { token } = useAuth();
     const fileInputRef = useRef(null);
 
-    // --- Drag and Drop Handlers ---
+    // --- Drag and Drop Handlers (No changes needed here) ---
     const handleDragOver = useCallback((e) => {
         e.preventDefault();
         e.stopPropagation();
@@ -37,17 +37,16 @@ function CreateJobForm({ onJobCreated }) {
         const droppedFiles = await Promise.all(
             droppedItems.map(item => getFilesFromEntry(item.webkitGetAsEntry()))
         );
-        // Flatten the array of arrays and add to existing files
         setFiles(prevFiles => [...prevFiles, ...droppedFiles.flat()]);
     }, []);
 
-    // --- File Input Handler ---
+    // --- File Input Handler (No changes needed here) ---
     const handleFileSelect = (e) => {
         const selectedFiles = Array.from(e.target.files);
         setFiles(prevFiles => [...prevFiles, ...selectedFiles]);
     };
 
-    // --- Form Submission ---
+    // --- Form Submission (No changes needed here) ---
     const handleSubmit = async (e) => {
         e.preventDefault();
         if (!prompt.trim() || files.length === 0) {
@@ -60,10 +59,8 @@ function CreateJobForm({ onJobCreated }) {
 
         try {
             await createJob(prompt, files, token);
-            // Reset form on success
             setPrompt('');
             setFiles([]);
-            // Notify parent component to refresh the job list
             onJobCreated();
         } catch (err) {
             console.error("Failed to create job:", err);
@@ -73,65 +70,63 @@ function CreateJobForm({ onJobCreated }) {
         }
     };
 
+    // --- NEW JSX STRUCTURE ---
+    // The root element is now the <form> itself.
+    // Labels and the outer container div have been removed.
     return (
-        <div className="create-job-container">
-            <h2>Create a New Edit</h2>
-            <form onSubmit={handleSubmit}>
-                <div className="form-group">
-                    <label htmlFor="prompt">1. Describe what you want to edit</label>
-                    <textarea
-                        id="prompt"
-                        value={prompt}
-                        onChange={(e) => setPrompt(e.target.value)}
-                        placeholder="e.g., 'Create a 1-minute highlight reel from my stream VOD, focusing on the funny moments. Add some background music.'"
-                        rows="4"
-                        required
+        <form onSubmit={handleSubmit} className="create-job-form">
+            <div className="form-group">
+                <textarea
+                    id="prompt"
+                    value={prompt}
+                    onChange={(e) => setPrompt(e.target.value)}
+                    placeholder="Describe what you want to edit... e.g., 'Create a 1-minute highlight reel from my stream VOD, focusing on the funny moments. Add some background music.'"
+                    rows="4"
+                    required
+                />
+            </div>
+
+            <div className="form-group">
+                <div
+                    className={`drop-zone ${isDragging ? 'dragging' : ''}`}
+                    onDragOver={handleDragOver}
+                    onDragLeave={handleDragLeave}
+                    onDrop={handleDrop}
+                    onClick={() => fileInputRef.current.click()}
+                >
+                    <p>Drag & drop files or folders here, or click to select.</p>
+                    <input
+                        type="file"
+                        ref={fileInputRef}
+                        onChange={handleFileSelect}
+                        multiple
+                        webkitdirectory="true"
+                        style={{ display: 'none' }}
                     />
                 </div>
+            </div>
 
-                <div className="form-group">
-                    <label>2. Add your media files</label>
-                    <div
-                        className={`drop-zone ${isDragging ? 'dragging' : ''}`}
-                        onDragOver={handleDragOver}
-                        onDragLeave={handleDragLeave}
-                        onDrop={handleDrop}
-                        onClick={() => fileInputRef.current.click()} // Trigger file input on click
-                    >
-                        <p>Drag & drop files or folders here, or click to select.</p>
-                        <input
-                            type="file"
-                            ref={fileInputRef}
-                            onChange={handleFileSelect}
-                            multiple
-                            webkitdirectory="true" // Allows folder selection
-                            style={{ display: 'none' }}
-                        />
-                    </div>
-                </div>
-
-                {files.length > 0 && (
-                    <div className="file-list-container">
-                        <h4>Selected Files:</h4>
-                        <ul className="file-list">
-                            {files.map((file, index) => (
-                                <li key={`${file.name}-${index}`}>{file.name}</li>
-                            ))}
-                        </ul>
-                        <button type="button" onClick={() => setFiles([])} className="clear-button">
-                            Clear All
-                        </button>
-                    </div>
-                )}
-
-                <div className="submit-section">
-                    <button type="submit" className="submit-button" disabled={isSubmitting || files.length === 0}>
-                        {isSubmitting ? 'Starting Job...' : 'Start Editing Job'}
+            {files.length > 0 && (
+                <div className="file-list-container">
+                    <h4>Selected Files:</h4>
+                    <ul className="file-list">
+                        {files.map((file, index) => (
+                            <li key={`${file.name}-${index}`}>{file.name}</li>
+                        ))}
+                    </ul>
+                    <button type="button" onClick={() => setFiles([])} className="clear-button">
+                        Clear All
                     </button>
-                    {error && <p className="error-message">{error}</p>}
                 </div>
-            </form>
-        </div>
+            )}
+
+            <div className="submit-section">
+                <button type="submit" className="submit-button" disabled={isSubmitting || files.length === 0}>
+                    {isSubmitting ? 'Starting Job...' : 'Start Editing Job'}
+                </button>
+                {error && <p className="error-message">{error}</p>}
+            </div>
+        </form>
     );
 }
 

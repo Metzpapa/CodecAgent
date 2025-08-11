@@ -1,8 +1,10 @@
 // frontend/src/components/JobItem.jsx
 
-import React, { useState, useEffect } from 'react';
+import React from 'react';
+// NEW: Import Link for navigation
+import { Link } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext.jsx';
-import { getJobStatus, getDownloadUrl } from '../services/api';
+import { getDownloadUrl } from '../services/api';
 import './JobItem.css';
 
 const formatDate = (dateString) => {
@@ -10,48 +12,13 @@ const formatDate = (dateString) => {
     return new Date(dateString).toLocaleString();
 };
 
-function JobItem({ initialJob }) {
-    const [job, setJob] = useState(initialJob);
+// This component is now much simpler. It receives the job data and renders it
+// as a link. It no longer polls for updates; the JobDetailPage will handle that.
+function JobItem({ initialJob: job }) {
     const { token } = useAuth();
 
-    useEffect(() => {
-        const isRunning = job.status === 'PENDING' || job.status === 'PROGRESS';
-
-        // Only start polling if the job is in a running state.
-        if (!isRunning) {
-            return;
-        }
-
-        const intervalId = setInterval(async () => {
-            try {
-                // This API endpoint now returns the full job object from the DB.
-                const updatedJobData = await getJobStatus(job.job_id, token);
-                
-                // Simply update the entire job state with the new data from the DB.
-                // This is simpler and ensures all fields (status, result_payload) are in sync.
-                // The API result has a 'result' key which maps to our 'result_payload'.
-                setJob(prevJob => ({
-                    ...prevJob,
-                    status: updatedJobData.status,
-                    result_payload: updatedJobData.result,
-                }));
-
-            } catch (error) {
-                console.error(`Failed to get status for job ${job.job_id}`, error);
-                // On a polling error, we assume the job failed to prevent spamming a broken endpoint.
-                setJob(prevJob => ({ ...prevJob, status: 'FAILURE', result_payload: { message: 'Error fetching status.' } }));
-            }
-        }, 5000); // Poll every 5 seconds
-
-        // The cleanup function is crucial. It runs when the component unmounts
-        // or when the dependencies in the array below change.
-        return () => {
-            clearInterval(intervalId);
-        };
-        // The effect re-runs if the job's status changes. This correctly handles
-        // the transition from a running state to a final state, at which point
-        // the `if (!isRunning)` check will stop the polling.
-    }, [job.status, job.job_id, token]);
+    // The polling useEffect has been removed to improve dashboard performance.
+    // This component is now a simple presentational link.
 
     const renderStatus = () => {
         switch (job.status) {
@@ -68,15 +35,45 @@ function JobItem({ initialJob }) {
         }
     };
 
+    const handleDownloadClick = (e) => {
+        // CRUCIAL: Stop the click from bubbling up to the parent <Link> component.
+        // This prevents navigating to the detail page when the user only wants to download.
+        e.stopPropagation();
+        e.preventDefault();
+
+        fetch(getDownloadUrl(job.job_id), { headers: { 'Authorization': `Bearer ${token}` } })
+            .then(res => {
+                if (!res.ok) throw new Error(`Download failed: ${res.statusText}`);
+                return res.blob();
+            })
+            .then(blob => {
+                const url = window.URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.style.display = 'none';
+                a.href = url;
+                const filename = job.result_payload?.output_path?.split('/').pop();
+                a.download = filename || 'codec_edit.otio';
+                document.body.appendChild(a);
+                a.click();
+                window.URL.revokeObjectURL(url);
+                a.remove();
+            })
+            .catch(err => {
+                console.error("Download error:", err);
+                // Optionally, show an error to the user here.
+            });
+    };
+
     return (
-        <div className={`job-item ${job.status.toLowerCase()}`}>
+        // The entire item is now a link to the job's detail page.
+        // The className is moved here to ensure status-based styling still applies.
+        <Link to={`/jobs/${job.job_id}`} className={`job-item ${job.status.toLowerCase()}`}>
             <div className="job-item-header">
                 <p className="job-prompt">"{job.prompt}"</p>
                 <div className="job-status">{renderStatus()}</div>
             </div>
             <div className="job-item-body">
                 <p className="job-agent-message">
-                    {/* Use the payload from the job state, which is now correctly updated */}
                     {job.result_payload?.message || 'Waiting for agent to start...'}
                 </p>
             </div>
@@ -86,40 +83,13 @@ function JobItem({ initialJob }) {
                     <a
                         href={getDownloadUrl(job.job_id)}
                         className="download-button"
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        onClick={(e) => {
-                            // This fetch-based download is the correct way to handle
-                            // authenticated downloads, as it allows sending the Auth header.
-                            e.preventDefault();
-                            fetch(getDownloadUrl(job.job_id), { headers: { 'Authorization': `Bearer ${token}` } })
-                                .then(res => {
-                                    if (!res.ok) throw new Error(`Download failed: ${res.statusText}`);
-                                    return res.blob();
-                                })
-                                .then(blob => {
-                                    const url = window.URL.createObjectURL(blob);
-                                    const a = document.createElement('a');
-                                    a.style.display = 'none';
-                                    a.href = url;
-                                    const filename = job.result_payload.output_path.split('/').pop();
-                                    a.download = filename || 'codec_edit.otio';
-                                    document.body.appendChild(a);
-                                    a.click();
-                                    window.URL.revokeObjectURL(url);
-                                    a.remove();
-                                })
-                                .catch(err => {
-                                    console.error("Download error:", err);
-                                    // Optionally, show an error to the user here.
-                                });
-                        }}
+                        onClick={handleDownloadClick}
                     >
                         Download Edit
                     </a>
                 )}
             </div>
-        </div>
+        </Link>
     );
 }
 

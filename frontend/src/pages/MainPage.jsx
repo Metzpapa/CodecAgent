@@ -1,11 +1,11 @@
-// frontend/src/pages/MainPage.js
+// frontend/src/pages/MainPage.jsx
 
 import React, { useState, useEffect, useCallback } from 'react';
 import { useAuth } from '../context/AuthContext.jsx';
 import { getJobs } from '../services/api';
 import CreateJobForm from '../components/CreateJobForm.jsx';
 import JobList from '../components/JobList.jsx';
-import './MainPage.css';
+import './MainPage.css'; // This CSS file will also be updated
 
 function MainPage() {
     const { user, token, logout } = useAuth();
@@ -23,7 +23,8 @@ function MainPage() {
         try {
             const fetchedJobs = await getJobs(token);
             setJobs(fetchedJobs);
-        } catch (err) {
+        } catch (err)
+        {
             console.error("Error fetching jobs:", err);
             setError(err.message || 'An unknown error occurred while fetching jobs.');
         } finally {
@@ -55,7 +56,11 @@ function MainPage() {
             </header>
 
             <main className="main-content">
-                <CreateJobForm onJobCreated={handleJobCreated} />
+                {/* --- NEW: A dedicated, centered section for creating a job --- */}
+                <section className="creation-section">
+                    <h2 className="creation-title">Create an edit with Codec...</h2>
+                    <CreateJobForm onJobCreated={handleJobCreated} />
+                </section>
                 
                 <hr className="divider" />
 

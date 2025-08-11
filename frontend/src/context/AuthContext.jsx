@@ -37,6 +37,8 @@ export const AuthProvider = ({ children }) => {
             setToken(idToken);
             // Store the token in localStorage to persist the session across page reloads
             localStorage.setItem('googleIdToken', idToken);
+            // On any successful login (manual or silent), we are done loading.
+            setIsLoading(false);
         };
 
         // This function contains all the logic that depends on `window.google`.
@@ -49,25 +51,42 @@ export const AuthProvider = ({ children }) => {
                     callback: handleCredentialResponse,
                 });
 
-                // Check if a token already exists in localStorage from a previous session
                 const storedToken = localStorage.getItem('googleIdToken');
                 if (storedToken) {
                     const decodedToken = jwtDecode(storedToken);
                     // Check if the token is expired
                     if (decodedToken.exp * 1000 > Date.now()) {
+                        // Token is valid and not expired. We're logged in.
                         setUser(decodedToken);
                         setToken(storedToken);
+                        setIsLoading(false); // Stop loading, we're good to go.
                     } else {
-                        // Token is expired, clear it
+                        // Token is expired. Attempt a silent sign-in.
+                        console.log("Stored token is expired. Attempting silent sign-in...");
                         localStorage.removeItem('googleIdToken');
+
+                        // This triggers the silent sign-in / One-Tap prompt.
+                        // If successful, `handleCredentialResponse` will be called.
+                        // If it fails or is dismissed, the notification callback handles it.
+                        window.google.accounts.id.prompt((notification) => {
+                            // This callback is key for knowing when the prompt flow fails.
+                            const isFailure = notification.isNotDisplayed() || notification.isSkippedMoment() || notification.isDismissedMoment();
+                            if (isFailure) {
+                                console.log("Silent/One-Tap sign-in did not result in a credential. User needs to log in manually.");
+                                // We can now safely stop loading and show the login page.
+                                setIsLoading(false);
+                            }
+                        });
+                        // We keep `isLoading` as `true` while we wait for the prompt's outcome.
                     }
+                } else {
+                    // No token exists. User is not logged in. Stop loading.
+                    setIsLoading(false);
                 }
             } catch (error) {
                 console.error("Error initializing Google Sign-In or decoding token:", error);
                 // Clear potentially corrupt token
                 localStorage.removeItem('googleIdToken');
-            } finally {
-                // Crucially, we only stop loading after initialization is attempted.
                 setIsLoading(false);
             }
         };

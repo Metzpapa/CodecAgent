@@ -47,8 +47,28 @@
 }
 
 .main-content {
+    /* This keeps the "My Edits" h2 in JobList left-aligned, which is good. */
     text-align: left;
 }
+
+/* --- NEW STYLES START HERE --- */
+
+.creation-section {
+    /* This container will center the title and the form within it */
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    margin-bottom: 40px; /* Add some space before the divider */
+}
+
+.creation-title {
+    font-size: 2rem; /* Make the title more prominent */
+    font-weight: 500;
+    color: #d0d0d0;
+    margin-bottom: 30px; /* Space between title and the form */
+}
+
+/* --- END NEW STYLES --- */
 
 .divider {
     border: 0;

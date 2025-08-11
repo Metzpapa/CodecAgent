@@ -100,6 +100,26 @@ export const getJobStatus = (jobId, token) => {
   });
 };
 
+// --- NEW FUNCTION ---
+/**
+ * Fetch all details for a single job by its ID.
+ * Used to populate the JobDetailPage.
+ * @param {string} jobId
+ * @param {string} token
+ */
+export const getJobById = (jobId, token) => {
+  // This currently uses the same endpoint as getJobStatus, which returns
+  // the full job object. If a dedicated endpoint is created later,
+  // only this URL needs to be changed.
+  return apiFetch(`/jobs/${jobId}/status`, {
+    method: 'GET',
+    headers: {
+      'Authorization': `Bearer ${token}`,
+    },
+  });
+};
+// --- END NEW FUNCTION ---
+
 /**
  * Create a new editing job by uploading files and a prompt.
  * @param {string} prompt
