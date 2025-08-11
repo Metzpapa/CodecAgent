@@ -1,70 +1,26 @@
 // frontend/src/pages/MainPage.jsx
 
-import React, { useState, useEffect, useCallback } from 'react';
-import { useAuth } from '../context/AuthContext.jsx';
-import { getJobs } from '../services/api';
+import React from 'react';
 import CreateJobForm from '../components/CreateJobForm.jsx';
-import JobList from '../components/JobList.jsx';
 import './MainPage.css'; // This CSS file will also be updated
 
 function MainPage() {
-    const { user, token, logout } = useAuth();
-    const [jobs, setJobs] = useState([]);
-    const [isLoading, setIsLoading] = useState(true);
-    const [error, setError] = useState(null);
-
-    // We wrap fetchJobs in useCallback to memoize it.
-    // This prevents it from being recreated on every render, which is efficient.
-    const fetchJobs = useCallback(async () => {
-        if (!token) return;
-
-        setIsLoading(true);
-        setError(null);
-        try {
-            const fetchedJobs = await getJobs(token);
-            setJobs(fetchedJobs);
-        } catch (err)
-        {
-            console.error("Error fetching jobs:", err);
-            setError(err.message || 'An unknown error occurred while fetching jobs.');
-        } finally {
-            setIsLoading(false);
-        }
-    }, [token]); // It only needs to be recreated if the token changes.
-
-    // Fetch jobs when the component mounts.
-    useEffect(() => {
-        fetchJobs();
-    }, [fetchJobs]);
-
-    // This function will be passed down to the CreateJobForm.
-    // When a new job is successfully created, the form will call this
-    // function to trigger a refresh of the job list.
-    const handleJobCreated = () => {
-        console.log("New job created. Refreshing job list...");
-        fetchJobs();
-    };
+    // This component no longer needs to fetch jobs or handle user info.
+    // Its only purpose is to provide a welcoming page for creating a new job.
+    // The logic to navigate after job creation will be moved into CreateJobForm itself.
 
     return (
         <div className="main-page-container">
-            <header className="main-header">
-                <div className="logo">Codec</div>
-                <div className="user-info">
-                    <span>{user?.email}</span>
-                    <button onClick={logout} className="logout-button">Logout</button>
-                </div>
-            </header>
-
             <main className="main-content">
-                {/* --- NEW: A dedicated, centered section for creating a job --- */}
+                {/* A dedicated, centered section for creating a job */}
                 <section className="creation-section">
                     <h2 className="creation-title">Create an edit with Codec...</h2>
-                    <CreateJobForm onJobCreated={handleJobCreated} />
+                    {/* 
+                      This form will be updated next to handle its own navigation
+                      after a job is created. The onJobCreated prop is no longer needed here.
+                    */}
+                    <CreateJobForm />
                 </section>
-                
-                <hr className="divider" />
-
-                <JobList jobs={jobs} isLoading={isLoading} error={error} />
             </main>
         </div>
     );

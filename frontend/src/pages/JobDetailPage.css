@@ -2,9 +2,7 @@
 
 /* --- Main Page Layout --- */
 .job-detail-page {
-    max-width: 900px; /* A bit narrower than the main dashboard for a more focused view */
-    margin: 0 auto;
-    padding: 20px;
+    /* max-width, margin, and padding are removed. The parent .page-content now handles this. */
     text-align: left;
 }
 
@@ -18,16 +16,15 @@
     border-bottom: 1px solid #333;
 }
 
-.back-link {
-    color: #a0a0a0;
-    text-decoration: none;
-    font-size: 1rem;
-    transition: color 0.2s;
+/* New style for the page title */
+.job-detail-header h1 {
+    margin: 0;
+    font-size: 1.5rem;
+    font-weight: 500;
+    color: #e0e0e0;
 }
 
-.back-link:hover {
-    color: #fff;
-}
+/* .back-link and .back-link:hover styles are removed */
 
 .job-status-header {
     display: flex;
@@ -37,7 +34,7 @@
     font-weight: 600;
 }
 
-/* --- Content Sections --- */
+/* --- Content Sections (No changes below this line) --- */
 .job-detail-content h3 {
     font-size: 1.2rem;
     font-weight: 600;
@@ -76,14 +73,14 @@
     border: 1px solid #333;
     border-radius: 5px;
     padding: 20px;
-    max-height: 400px; /* Limit height and make it scrollable */
+    max-height: 400px;
     overflow-y: auto;
 }
 
 .agent-message-box pre {
     margin: 0;
-    white-space: pre-wrap; /* Preserves newlines and wraps long lines */
-    word-wrap: break-word; /* Breaks long words to prevent overflow */
+    white-space: pre-wrap;
+    word-wrap: break-word;
     font-family: 'Courier New', Courier, monospace;
     font-size: 0.9rem;
     color: #b0b0b0;
@@ -140,7 +137,7 @@
 }
 
 .follow-up-section button {
-    align-self: flex-end; /* Align button to the right */
+    align-self: flex-end;
     background-color: #3a7ac9;
     color: white;
     border: none;
@@ -162,7 +159,7 @@
 }
 
 
-/* --- Re-usable utility classes (copied for consistency) --- */
+/* --- Re-usable utility classes --- */
 .divider {
     border: 0;
     height: 1px;

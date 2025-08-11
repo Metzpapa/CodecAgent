@@ -1,11 +1,13 @@
 // frontend/src/components/CreateJobForm.jsx
 
 import React, { useState, useCallback, useRef } from 'react';
+import { useNavigate } from 'react-router-dom'; // <-- 1. Import the hook
 import { useAuth } from '../context/AuthContext.jsx';
 import { createJob } from '../services/api';
-import './CreateJobForm.css'; // This CSS will be updated next
+import './CreateJobForm.css';
 
-function CreateJobForm({ onJobCreated }) {
+// 2. The `onJobCreated` prop has been removed.
+function CreateJobForm() {
     const [prompt, setPrompt] = useState('');
     const [files, setFiles] = useState([]);
     const [isSubmitting, setIsSubmitting] = useState(false);
@@ -14,6 +16,7 @@ function CreateJobForm({ onJobCreated }) {
 
     const { token } = useAuth();
     const fileInputRef = useRef(null);
+    const navigate = useNavigate(); // <-- 3. Instantiate the hook
 
     // --- Drag and Drop Handlers (No changes needed here) ---
     const handleDragOver = useCallback((e) => {
@@ -46,7 +49,7 @@ function CreateJobForm({ onJobCreated }) {
         setFiles(prevFiles => [...prevFiles, ...selectedFiles]);
     };
 
-    // --- Form Submission (No changes needed here) ---
+    // --- Form Submission (Updated with navigation logic) ---
     const handleSubmit = async (e) => {
         e.preventDefault();
         if (!prompt.trim() || files.length === 0) {
@@ -58,21 +61,21 @@ function CreateJobForm({ onJobCreated }) {
         setError(null);
 
         try {
-            await createJob(prompt, files, token);
-            setPrompt('');
-            setFiles([]);
-            onJobCreated();
+            // 4. Capture the response from the API call
+            const newJob = await createJob(prompt, files, token);
+            
+            // 5. Navigate to the new job's detail page
+            navigate(`/jobs/${newJob.job_id}`);
+
         } catch (err) {
             console.error("Failed to create job:", err);
             setError(err.message || "An unknown error occurred.");
         } finally {
-            setIsSubmitting(false);
+            setIsSubmitting(isSubmitting);
         }
     };
 
-    // --- NEW JSX STRUCTURE ---
-    // The root element is now the <form> itself.
-    // Labels and the outer container div have been removed.
+    // --- JSX STRUCTURE (No changes needed here) ---
     return (
         <form onSubmit={handleSubmit} className="create-job-form">
             <div className="form-group">
@@ -152,4 +155,4 @@ async function getFilesFromEntry(entry) {
     return [];
 }
 
-export default CreateJobForm;
+export default CreateJobForm;   

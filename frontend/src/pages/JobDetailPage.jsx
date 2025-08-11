@@ -1,10 +1,10 @@
 // frontend/src/pages/JobDetailPage.jsx
 
 import React, { useState, useEffect, useCallback } from 'react';
-import { useParams, Link } from 'react-router-dom'; // useParams to get ID from URL, Link to go back
+import { useParams } from 'react-router-dom'; // useParams to get ID from URL, Link is removed
 import { useAuth } from '../context/AuthContext.jsx';
 import { getJobById, getDownloadUrl } from '../services/api';
-import './JobDetailPage.css'; // We will create this new CSS file next
+import './JobDetailPage.css'; // This CSS file will be updated next
 
 // Helper to format dates
 const formatDate = (dateString) => {
@@ -29,7 +29,7 @@ const renderStatus = (status) => {
 };
 
 function JobDetailPage() {
-    const { jobId } = useParams(); // Get the job ID from the URL, e.g., "/jobs/abc-123"
+    const { jobId } = useParams();
     const { token } = useAuth();
 
     const [job, setJob] = useState(null);
@@ -37,20 +37,14 @@ function JobDetailPage() {
     const [error, setError] = useState(null);
     const [followUpPrompt, setFollowUpPrompt] = useState('');
 
-    // This function fetches the latest job data. It's wrapped in useCallback
-    // to be stable and not cause unnecessary re-renders when used in useEffect.
     const fetchJob = useCallback(async () => {
         if (!token || !jobId) return;
         try {
-            // NOTE: The getJobById function currently uses the `/status` endpoint.
-            // This endpoint returns the core job data but might be missing metadata
-            // like the original prompt. For now, we merge it with existing data.
-            // A dedicated `/jobs/{jobId}` endpoint on the backend would be ideal.
             const fetchedJobData = await getJobById(jobId, token);
             setJob(prevJob => ({
-                ...prevJob, // Keep old data like prompt if it's not in the new payload
+                ...prevJob,
                 ...fetchedJobData,
-                result_payload: fetchedJobData.result, // Align payload key
+                result_payload: fetchedJobData.result,
             }));
         } catch (err) {
             console.error(`Failed to fetch job ${jobId}:`, err);
@@ -58,24 +52,22 @@ function JobDetailPage() {
         }
     }, [jobId, token]);
 
-    // Effect for the initial data load when the component mounts.
+    // Effect for the initial data load (no changes)
     useEffect(() => {
         setIsLoading(true);
         fetchJob().finally(() => setIsLoading(false));
-    }, [fetchJob]); // Runs once on mount because fetchJob is stable
+    }, [fetchJob]);
 
-    // Effect for polling, which starts/stops based on the job's status.
+    // Effect for polling (no changes)
     useEffect(() => {
         if (!job || (job.status !== 'PENDING' && job.status !== 'PROGRESS')) {
-            return; // Stop polling if the job is done or doesn't exist.
+            return;
         }
-
-        const intervalId = setInterval(fetchJob, 5000); // Poll every 5 seconds
-
-        // Cleanup function to stop polling when the component unmounts or the job is finished.
+        const intervalId = setInterval(fetchJob, 5000);
         return () => clearInterval(intervalId);
     }, [job, fetchJob]);
 
+    // Download handler (no changes)
     const handleDownloadClick = (e) => {
         e.preventDefault();
         fetch(getDownloadUrl(job.job_id), { headers: { 'Authorization': `Bearer ${token}` } })
@@ -101,12 +93,10 @@ function JobDetailPage() {
             });
     };
 
+    // Follow-up handler (no changes)
     const handleFollowUpSubmit = (e) => {
         e.preventDefault();
         if (!followUpPrompt.trim()) return;
-        // --- FUTURE ---
-        // This is where you would call a new API endpoint, e.g.,
-        // `askFollowUp(jobId, followUpPrompt, token)`
         console.log(`Submitting follow-up for job ${jobId}: "${followUpPrompt}"`);
         alert("Follow-up functionality is not yet implemented in the backend.");
         setFollowUpPrompt('');
@@ -116,12 +106,10 @@ function JobDetailPage() {
         return <div className="loading-container"><h2>Loading Job Details...</h2></div>;
     }
 
+    // Updated error/not-found views to remove the back link
     if (error) {
         return (
             <div className="job-detail-page">
-                <header className="job-detail-header">
-                    <Link to="/" className="back-link">&larr; Back to Dashboard</Link>
-                </header>
                 <div className="error-text">Error: {error}</div>
             </div>
         );
@@ -130,9 +118,6 @@ function JobDetailPage() {
     if (!job) {
         return (
             <div className="job-detail-page">
-                <header className="job-detail-header">
-                    <Link to="/" className="back-link">&larr; Back to Dashboard</Link>
-                </header>
                 <p>Job not found.</p>
             </div>
         );
@@ -140,8 +125,9 @@ function JobDetailPage() {
 
     return (
         <div className="job-detail-page">
+            {/* The header is simplified, removing the back link. */}
             <header className="job-detail-header">
-                <Link to="/" className="back-link">&larr; Back to Dashboard</Link>
+                <h1>Edit Details</h1>
                 <div className="job-status-header">{renderStatus(job.status)}</div>
             </header>
 
@@ -185,7 +171,7 @@ function JobDetailPage() {
                             onChange={(e) => setFollowUpPrompt(e.target.value)}
                             placeholder="e.g., 'Make it shorter.' or 'Change the background music.'"
                             rows="3"
-                            disabled={job.status !== 'SUCCESS'} // Only allow follow-ups on success
+                            disabled={job.status !== 'SUCCESS'}
                         />
                         <button type="submit" disabled={!followUpPrompt.trim() || job.status !== 'SUCCESS'}>
                             Send
