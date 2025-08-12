@@ -1,10 +1,10 @@
 // frontend/src/pages/JobDetailPage.jsx
 
 import React, { useState, useEffect, useCallback } from 'react';
-import { useParams } from 'react-router-dom'; // useParams to get ID from URL, Link is removed
+import { useParams } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext.jsx';
 import { getJobById, getDownloadUrl } from '../services/api';
-import './JobDetailPage.css'; // This CSS file will be updated next
+import './JobDetailPage.css';
 
 // Helper to format dates
 const formatDate = (dateString) => {
@@ -12,19 +12,14 @@ const formatDate = (dateString) => {
     return new Date(dateString).toLocaleString();
 };
 
-// Helper to render the status with a spinner and text
-const renderStatus = (status) => {
+// Helper to get a simple status text for the card header
+const getStatusText = (status) => {
     switch (status) {
-        case 'PENDING':
-            return <><div className="spinner"></div><span>Queued</span></>;
-        case 'PROGRESS':
-            return <><div className="spinner"></div><span>Editing...</span></>;
-        case 'SUCCESS':
-            return <span className="status-success">✔ Complete</span>;
-        case 'FAILURE':
-            return <span className="status-failure">✖ Failed</span>;
-        default:
-            return <span>{status}</span>;
+        case 'PENDING': return 'Queued';
+        case 'PROGRESS': return 'In Progress';
+        case 'SUCCESS': return 'Complete';
+        case 'FAILURE': return 'Failed';
+        default: return status || 'Loading...';
     }
 };
 
@@ -52,13 +47,13 @@ function JobDetailPage() {
         }
     }, [jobId, token]);
 
-    // Effect for the initial data load (no changes)
+    // Effect for the initial data load
     useEffect(() => {
         setIsLoading(true);
         fetchJob().finally(() => setIsLoading(false));
     }, [fetchJob]);
 
-    // Effect for polling (no changes)
+    // Effect for polling while the job is active
     useEffect(() => {
         if (!job || (job.status !== 'PENDING' && job.status !== 'PROGRESS')) {
             return;
@@ -67,7 +62,7 @@ function JobDetailPage() {
         return () => clearInterval(intervalId);
     }, [job, fetchJob]);
 
-    // Download handler (no changes)
+    // Download handler
     const handleDownloadClick = (e) => {
         e.preventDefault();
         fetch(getDownloadUrl(job.job_id), { headers: { 'Authorization': `Bearer ${token}` } })
@@ -93,7 +88,7 @@ function JobDetailPage() {
             });
     };
 
-    // Follow-up handler (no changes)
+    // Follow-up handler
     const handleFollowUpSubmit = (e) => {
         e.preventDefault();
         if (!followUpPrompt.trim()) return;
@@ -106,71 +101,71 @@ function JobDetailPage() {
         return <div className="loading-container"><h2>Loading Job Details...</h2></div>;
     }
 
-    // Updated error/not-found views to remove the back link
     if (error) {
-        return (
-            <div className="job-detail-page">
-                <div className="error-text">Error: {error}</div>
-            </div>
-        );
+        return <div className="job-detail-page"><div className="error-text">Error: {error}</div></div>;
     }
 
     if (!job) {
-        return (
-            <div className="job-detail-page">
-                <p>Job not found.</p>
-            </div>
-        );
+        return <div className="job-detail-page"><p>Job not found.</p></div>;
     }
 
     return (
         <div className="job-detail-page">
-            {/* The header is simplified, removing the back link. */}
-            <header className="job-detail-header">
-                <h1>Edit Details</h1>
-                <div className="job-status-header">{renderStatus(job.status)}</div>
-            </header>
-
-            <main className="job-detail-content">
-                <div className="job-prompt-section">
-                    <h3>Original Prompt</h3>
-                    <p>"{job.prompt || 'Could not load prompt. This may be an in-progress job.'}"</p>
-                    <span className="job-meta">Job ID: {job.job_id} &bull; Created: {formatDate(job.created_at)}</span>
-                </div>
-
-                <div className="job-conversation-section">
-                    <h3>Agent Log</h3>
-                    <div className="agent-message-box">
-                        <pre>{job.result_payload?.message || 'Waiting for agent to start...'}</pre>
+            <div className="conversation-thread">
+                {/* Card 1: User's Request */}
+                <div className="task-card user-card">
+                    <div className="card-header">
+                        <span className="card-author">Your Request</span>
+                        <span className="card-timestamp">{formatDate(job.created_at)}</span>
+                    </div>
+                    <div className="card-body">
+                        <p>"{job.prompt}"</p>
                     </div>
                 </div>
 
-                {job.status === 'SUCCESS' && job.result_payload?.output_path && (
-                    <div className="job-actions-section">
-                        <h3>Result</h3>
-                        <button onClick={handleDownloadClick} className="download-button-large">
-                            Download Edit
-                        </button>
+                {/* Card 2: Agent's Result */}
+                <div className={`task-card agent-card status-${job.status.toLowerCase()}`}>
+                    <div className="card-header">
+                        <span className="card-author">Codec Agent</span>
+                        <span className="card-status">{getStatusText(job.status)}</span>
                     </div>
-                )}
-
-                {job.status === 'FAILURE' && (
-                     <div className="job-actions-section">
-                        <h3>Result</h3>
-                        <p className="error-text">This job failed to complete.</p>
+                    <div className="card-body">
+                        {(job.status === 'PENDING' || job.status === 'PROGRESS') && (
+                            <div className="working-state">
+                                <div className="spinner-large"></div>
+                                <h3>Agent is working...</h3>
+                                <p>This may take a few minutes. You can close this page and come back later.</p>
+                            </div>
+                        )}
+                        {job.status === 'SUCCESS' && (
+                            <div className="success-state">
+                                <p>{job.result_payload?.message || 'Your edit is complete!'}</p>
+                                {job.result_payload?.output_path && (
+                                    <div className="attachments">
+                                        <h4>Attachments</h4>
+                                        <button onClick={handleDownloadClick} className="download-button">
+                                            Download Edit
+                                        </button>
+                                    </div>
+                                )}
+                            </div>
+                        )}
+                        {job.status === 'FAILURE' && (
+                            <div className="failure-state">
+                                <p>{job.result_payload?.message || 'An unexpected error occurred and the job could not be completed.'}</p>
+                            </div>
+                        )}
                     </div>
-                )}
+                </div>
 
-                <hr className="divider" />
-
-                <div className="follow-up-section">
-                    <h3>Ask a Follow-up</h3>
-                    <form onSubmit={handleFollowUpSubmit}>
+                {/* Card 3: Follow-up Input */}
+                <div className="task-card follow-up-card">
+                     <form onSubmit={handleFollowUpSubmit}>
                         <textarea
                             value={followUpPrompt}
                             onChange={(e) => setFollowUpPrompt(e.target.value)}
-                            placeholder="e.g., 'Make it shorter.' or 'Change the background music.'"
-                            rows="3"
+                            placeholder="Ask a follow-up (e.g., 'Make it shorter' or 'Change the music')..."
+                            rows="1"
                             disabled={job.status !== 'SUCCESS'}
                         />
                         <button type="submit" disabled={!followUpPrompt.trim() || job.status !== 'SUCCESS'}>
@@ -178,7 +173,7 @@ function JobDetailPage() {
                         </button>
                     </form>
                 </div>
-            </main>
+            </div>
         </div>
     );
 }
