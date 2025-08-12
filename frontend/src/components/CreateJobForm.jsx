@@ -103,7 +103,9 @@ function CreateJobForm() {
                         ref={fileInputRef}
                         onChange={handleFileSelect}
                         multiple
-                        webkitdirectory="true"
+                        // The 'webkitdirectory' attribute is removed to allow file selection.
+                        // Users can still drag-and-drop entire folders.
+                        accept="video/*,image/*,audio/*"
                         style={{ display: 'none' }}
                     />
                 </div>
@@ -155,4 +157,4 @@ async function getFilesFromEntry(entry) {
     return [];
 }
 
-export default CreateJobForm;   
+export default CreateJobForm;
