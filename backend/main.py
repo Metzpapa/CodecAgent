@@ -82,7 +82,7 @@ def read_root():
     return {"message": "Codec AI Backend is running."}
 
 
-@app.get("/jobs", response_model=List[JobResponse])
+@app.get("/api/jobs", response_model=List[JobResponse])
 def get_jobs_for_user(
     db: Session = Depends(get_db),
     user_id: str = Depends(get_current_user_id)
@@ -95,7 +95,7 @@ def get_jobs_for_user(
     return jobs
 
 
-@app.post("/jobs", status_code=202)
+@app.post("/api/jobs", status_code=202)
 async def create_job(
     background_tasks: BackgroundTasks,
     prompt: str = Form(...),
@@ -154,7 +154,7 @@ async def create_job(
     return {"job_id": job_id, "status": "ACCEPTED"}
 
 
-@app.get("/jobs/{job_id}/status")
+@app.get("/api/jobs/{job_id}/status")
 def get_job_status(
     job_id: str,
     db: Session = Depends(get_db),
@@ -170,11 +170,20 @@ def get_job_status(
     if not job:
         raise HTTPException(status_code=404, detail="Job not found or you do not have permission to view it.")
 
+    # --- MODIFIED ---
     # The worker updates the DB, so we just return the DB state. No Celery call needed.
-    return {"job_id": job.job_id, "status": job.status, "result": job.result_payload}
+    # We now include the prompt and creation date to fully populate the detail page.
+    return {
+        "job_id": job.job_id,
+        "status": job.status,
+        "result": job.result_payload,
+        "prompt": job.prompt,
+        "created_at": job.created_at
+    }
+    # --- END MODIFICATION ---
 
 
-@app.get("/jobs/{job_id}/download")
+@app.get("/api/jobs/{job_id}/download")
 async def download_result(
     job_id: str,
     background_tasks: BackgroundTasks,

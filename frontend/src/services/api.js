@@ -3,7 +3,7 @@
 // Centralized API client for the frontend.
 
 // Resolve API base URL from Vite env. If empty/undefined, default to same-origin
-// so requests like '/jobs' hit the current host (useful behind Nginx in prod).
+// so requests like '/api/jobs' hit the current host (useful behind Nginx in prod).
 const rawBase = import.meta.env.VITE_API_BASE_URL;
 const API_BASE_URL = rawBase && rawBase.trim() !== '' ? rawBase : '';
 
@@ -14,7 +14,7 @@ if (API_BASE_URL === '') {
 
 /**
  * Build a full URL for an API endpoint.
- * When API_BASE_URL === '', this returns relative paths (e.g., '/jobs').
+ * When API_BASE_URL === '', this returns relative paths (e.g., '/api/jobs').
  */
 const buildUrl = (endpoint) => `${API_BASE_URL}${endpoint}`;
 
@@ -78,7 +78,7 @@ const apiFetch = async (endpoint, options = {}) => {
  * @param {string} token - Google ID token (JWT)
  */
 export const getJobs = (token) => {
-  return apiFetch('/jobs', {
+  return apiFetch('/api/jobs', {
     method: 'GET',
     headers: {
       'Authorization': `Bearer ${token}`,
@@ -92,7 +92,7 @@ export const getJobs = (token) => {
  * @param {string} token
  */
 export const getJobStatus = (jobId, token) => {
-  return apiFetch(`/jobs/${jobId}/status`, {
+  return apiFetch(`/api/jobs/${jobId}/status`, {
     method: 'GET',
     headers: {
       'Authorization': `Bearer ${token}`,
@@ -111,7 +111,7 @@ export const getJobById = (jobId, token) => {
   // This currently uses the same endpoint as getJobStatus, which returns
   // the full job object. If a dedicated endpoint is created later,
   // only this URL needs to be changed.
-  return apiFetch(`/jobs/${jobId}/status`, {
+  return apiFetch(`/api/jobs/${jobId}/status`, {
     method: 'GET',
     headers: {
       'Authorization': `Bearer ${token}`,
@@ -139,7 +139,7 @@ export const createJob = async (prompt, files, token) => {
   }
 
   // Do not set Content-Type manually for FormData; the browser will set it with boundary.
-  return apiFetch('/jobs', {
+  return apiFetch('/api/jobs', {
     method: 'POST',
     headers: {
       'Authorization': `Bearer ${token}`,
@@ -154,5 +154,5 @@ export const createJob = async (prompt, files, token) => {
  * @param {string} jobId
  */
 export const getDownloadUrl = (jobId) => {
-  return buildUrl(`/jobs/${jobId}/download`);
+  return buildUrl(`/api/jobs/${jobId}/download`);
 };

@@ -25,42 +25,61 @@ const getStatusText = (status) => {
 
 function JobDetailPage() {
     const { jobId } = useParams();
-    const { token } = useAuth();
+    // --- FIX: Destructure `isLoading` from auth and rename it to avoid conflicts ---
+    const { token, isLoading: isAuthLoading } = useAuth();
 
     const [job, setJob] = useState(null);
-    const [isLoading, setIsLoading] = useState(true);
+    // Renamed to be more specific
+    const [isPageLoading, setIsPageLoading] = useState(true);
     const [error, setError] = useState(null);
     const [followUpPrompt, setFollowUpPrompt] = useState('');
 
-    const fetchJob = useCallback(async () => {
-        if (!token || !jobId) return;
-        try {
-            const fetchedJobData = await getJobById(jobId, token);
-            setJob(prevJob => ({
-                ...prevJob,
-                ...fetchedJobData,
-                result_payload: fetchedJobData.result,
-            }));
-        } catch (err) {
-            console.error(`Failed to fetch job ${jobId}:`, err);
-            setError(err.message || 'An unknown error occurred.');
-        }
-    }, [jobId, token]);
-
-    // Effect for the initial data load
+    // --- FIX: This effect now handles initial load and resets state correctly ---
     useEffect(() => {
-        setIsLoading(true);
-        fetchJob().finally(() => setIsLoading(false));
-    }, [fetchJob]);
+        // Don't do anything if auth is still resolving or if we have no token.
+        if (isAuthLoading || !token) {
+            return;
+        }
+
+        const loadInitialJob = async () => {
+            setError(null); // <-- FIX for sticky error: Reset on every new job load.
+            setIsPageLoading(true);
+            try {
+                const fetchedJobData = await getJobById(jobId, token);
+                // The backend returns the payload in a 'result' key. We map it to
+                // 'result_payload' which the rest of this component expects.
+                setJob({ ...fetchedJobData, result_payload: fetchedJobData.result });
+            } catch (err) {
+                console.error(`Failed to fetch job ${jobId}:`, err);
+                setError(err.message || 'An unknown error occurred.');
+            } finally {
+                setIsPageLoading(false);
+            }
+        };
+
+        loadInitialJob();
+    }, [jobId, token, isAuthLoading]); // Effect runs when job, user, or auth state changes.
 
     // Effect for polling while the job is active
     useEffect(() => {
         if (!job || (job.status !== 'PENDING' && job.status !== 'PROGRESS')) {
             return;
         }
-        const intervalId = setInterval(fetchJob, 5000);
+
+        const pollJobStatus = async () => {
+            try {
+                const fetchedJobData = await getJobById(jobId, token);
+                setJob({ ...fetchedJobData, result_payload: fetchedJobData.result });
+            } catch (err) {
+                // A failed poll shouldn't disrupt the UI with a big error message.
+                // We just log it and the next poll will try again.
+                console.error(`Polling failed for job ${jobId}:`, err);
+            }
+        };
+
+        const intervalId = setInterval(pollJobStatus, 5000);
         return () => clearInterval(intervalId);
-    }, [job, fetchJob]);
+    }, [job, jobId, token]); // Dependencies are correct
 
     // Download handler
     const handleDownloadClick = (e) => {
@@ -97,7 +116,12 @@ function JobDetailPage() {
         setFollowUpPrompt('');
     };
 
-    if (isLoading) {
+    // --- FIX: Halt rendering until authentication is resolved to prevent race conditions ---
+    if (isAuthLoading) {
+        return <div className="loading-container"><h2>Loading...</h2></div>;
+    }
+
+    if (isPageLoading) {
         return <div className="loading-container"><h2>Loading Job Details...</h2></div>;
     }
 
@@ -119,6 +143,7 @@ function JobDetailPage() {
                         <span className="card-timestamp">{formatDate(job.created_at)}</span>
                     </div>
                     <div className="card-body">
+                        {/* This now renders correctly because the API provides the 'prompt' field */}
                         <p>"{job.prompt}"</p>
                     </div>
                 </div>
