@@ -29,7 +29,13 @@ logging.basicConfig(
     level="INFO",
     format="%(message)s",
     datefmt="[%X]",
-    handlers=[RichHandler(rich_tracebacks=True, markup=True, show_path=False)]
+    handlers=[RichHandler(
+        rich_tracebacks=True, 
+        markup=True, 
+        show_path=False, 
+        show_time=False,    # <-- ADD THIS
+        show_level=False    # <-- ADD THIS
+    )]
 )
 log = logging.getLogger("rich")
 console = Console()
