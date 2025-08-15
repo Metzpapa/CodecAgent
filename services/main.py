@@ -17,8 +17,8 @@ from sqlalchemy.orm import Session
 from datetime import datetime
 
 # --- Local Application Imports ---
-from . import database
-from .database import Job, get_db
+from ..codec import database
+from ..codec.database import Job, get_db
 from .auth import get_current_user_id
 from .tasks import celery_app, run_editing_job
 

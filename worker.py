@@ -1,2 +1,2 @@
 # worker.py
-from backend.tasks import celery_app
+from services.tasks import celery_app

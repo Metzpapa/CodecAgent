@@ -12,3 +12,4 @@ yt-dlp
 SQLAlchemy~=2.0.30
 google-auth~=2.29.0
 requests
+rich

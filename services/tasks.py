@@ -11,11 +11,11 @@ from celery.utils.log import get_task_logger
 from sqlalchemy.orm import Session
 
 # Local imports
-from .database import SessionLocal, Job
-from .agent import Agent
-from .state import State
-from .tools.finish_job import JobFinishedException
-from .agent_logging import AgentContextLogger # <-- NEW: Import the new logger
+from ..codec.database import SessionLocal, Job
+from ..codec.agent import Agent
+from ..codec.state import State
+from ..codec.tools.finish_job import JobFinishedException
+from ..codec.agent_logging import AgentContextLogger
 
 load_dotenv()
 
@@ -85,9 +85,11 @@ def run_editing_job(self, job_id: str, prompt: str, assets_directory: str, outpu
         logger.info("Agent initialized. Starting main execution loop...")
         self.update_state(state='PROGRESS', meta={'status': 'Agent is processing the request...'})
         
+        # --- THIS IS THE ONLY MODIFIED LINE ---
         # The agent's run method will now use the context_logger to log
         # its setup, thoughts, tool calls, and tool results in real-time.
-        video_agent.run(prompt=prompt)
+        video_agent.run_to_completion(prompt=prompt)
+        # --- END MODIFICATION ---
 
         # This line should ideally not be reached. If it is, it means the agent
         # finished its loop without calling the mandatory `finish_job` tool.
