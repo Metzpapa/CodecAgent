@@ -33,8 +33,8 @@ logging.basicConfig(
         rich_tracebacks=True, 
         markup=True, 
         show_path=False, 
-        show_time=False,    # <-- ADD THIS
-        show_level=False    # <-- ADD THIS
+        show_time=False,
+        show_level=False
     )]
 )
 log = logging.getLogger("rich")
@@ -65,15 +65,14 @@ def run_cli():
         output_dir.mkdir(exist_ok=True)
         console.print(f"[green]Copied sample assets from '{SAMPLE_PROJECT_PATH}' to '{assets_dir}'[/green]")
 
-        # 2. Initialize the Brain
+        # 2. Initialize the Brain (This happens only ONCE per session)
         state = State(assets_directory=str(assets_dir))
-        # The stream_logger directs the Agent's narrative log to our rich console.
         context_logger = AgentContextLogger(job_id=job_id, stream_logger=log)
         agent = Agent(state=state, context_logger=context_logger)
 
         # 3. The Interaction Loop
-        console.print("\n[bold magenta]Welcome to the Codec Agent CLI.[/bold magenta]")
-        console.print("Type your request to the agent. Type 'exit' or 'quit' to end the session.")
+        console.print("\n[bold magenta]Welcome to the Codec Agent CLI (Batch Mode).[/bold magenta]")
+        console.print("Each prompt will run to completion. Type 'exit' or 'quit' to end the session.")
         
         while True:
             prompt = Prompt.ask("[bold yellow]You[/bold yellow]")
@@ -81,25 +80,23 @@ def run_cli():
                 break
 
             try:
-                # This is the core call to the agent's brain for one turn.
-                agent.step(prompt)
-
-                # After the agent's turn, check for new multimodal content.
-                if state.new_file_ids_for_model:
-                    console.print(f"\n[bold cyan]System:[/bold cyan] [italic]Agent's turn complete. The model can now see {len(state.new_file_ids_for_model)} new file(s).[/italic]")
-                    # In a more advanced version, you could add logic here to
-                    # automatically open the generated images.
-                    state.new_file_ids_for_model.clear() # Clear for the next turn
+                # --- MODIFICATION 1: Call run_to_completion instead of step ---
+                # This will now run the agent in a loop until it calls finish_job
+                agent.run_to_completion(prompt)
 
             except JobFinishedException as e:
-                # This is the clean exit path when the agent calls 'finish_job'.
+                # --- MODIFICATION 2: Handle the exception as the end of a SINGLE JOB ---
+                # Instead of breaking the loop, we print the result and continue,
+                # allowing for the next prompt.
                 console.print("\n[bold green]JOB FINISHED[/bold green]")
                 console.print(f"Final Message: {e.result.get('message')}")
                 if e.result.get('output_path'):
                     console.print(f"Output Path: {e.result.get('output_path')}")
-                break
+                console.print("-" * 50)
+                # The loop continues, waiting for the next prompt...
+
             except Exception as e:
-                console.print(f"[bold red]An unexpected error occurred in the agent step:[/bold red]")
+                console.print(f"[bold red]An unexpected error occurred in the agent run:[/bold red]")
                 log.exception(e) # Print full, rich-formatted traceback
 
     finally:

@@ -7,6 +7,7 @@ import importlib
 import json
 import pprint
 import logging
+import time
 from typing import Dict, List, Any
 
 # Direct OpenAI import
@@ -96,12 +97,93 @@ class Agent:
             "parameters": schema,
         }
 
+    # --- NEW: The core, reusable logic block ---
+    def _execute_turn(self, current_api_input: List[Dict[str, Any]], system_prompt: str) -> List[Dict[str, Any]]:
+        """
+        Executes a single turn of the agent's logic.
+        1. Calls the OpenAI API.
+        2. Processes the response (which might involve executing tools).
+        3. Returns the input for the *next* turn.
+        This is the fundamental building block for both run_to_completion and any future interactive modes.
+        """
+        # 1. Call the API
+        try:
+            response = self.client.responses.create(
+                model=self.model_name,
+                input=current_api_input,
+                tools=self.openai_tools_payload,
+                instructions=system_prompt,
+                previous_response_id=self.state.last_response_id,
+            )
+        except openai.RateLimitError:
+            logging.warning("Rate limit reached. Waiting for 60 seconds before retrying...")
+            time.sleep(60)
+            # On retry, we want to use the same input again.
+            return current_api_input
+        except openai.APIError as e:
+            logging.error(f"OpenAI API Error: {e}", exc_info=True)
+            pprint.pprint(e.response.json())
+            self.context_logger.log_tool_result("OpenAI_API", f"FATAL ERROR: {e}")
+            # Return an empty list to signal a fatal error and stop the loop.
+            return []
+
+        self.state.last_response_id = response.id
+        self.context_logger.log_model_response(response)
+        self.state.history.extend([item.model_dump() for item in response.output])
+
+        tool_calls: List[ResponseFunctionToolCall] = [
+            item for item in response.output if item.type == 'function_call'
+        ]
+
+        # If no tool calls, the agent's turn is over. Return empty to stop the loop.
+        if not tool_calls:
+            return []
+
+        # 2. Process tool calls
+        tool_outputs_for_api = []
+        self.state.new_file_ids_for_model = []
+
+        for call in tool_calls:
+            tool_to_execute = self.tools.get(call.name)
+            tool_output_string = f"Error: Tool '{call.name}' not found."
+
+            if tool_to_execute:
+                try:
+                    parsed_args = json.loads(call.arguments)
+                    validated_args = tool_to_execute.args_schema(**parsed_args)
+                    tool_output_string = tool_to_execute.execute(self.state, validated_args, self.client)
+                except JobFinishedException:
+                    # Propagate the exception to be caught by the high-level orchestrator.
+                    raise
+                except Exception as e:
+                    tool_output_string = f"Error executing tool '{call.name}': {e}"
+                    logging.error(f"Error during tool execution for '{call.name}'", exc_info=True)
+
+            self.context_logger.log_tool_result(call.name, tool_output_string)
+
+            tool_outputs_for_api.append({
+                "type": "function_call_output",
+                "call_id": call.call_id,
+                "output": tool_output_string
+            })
+
+        # 3. Prepare and return the input for the next turn
+        next_api_input = list(tool_outputs_for_api)
+        if self.state.new_file_ids_for_model:
+            multimodal_content = [
+                {"type": "input_image", "file_id": file_id}
+                for file_id in self.state.new_file_ids_for_model
+            ]
+            next_api_input.append({"role": "user", "content": multimodal_content})
+        
+        self.state.history.extend(next_api_input)
+        return next_api_input
+
+    # --- REFACTORED: This is now a simple orchestrator ---
     def run_to_completion(self, prompt: str):
         """
         Starts and manages the agent's execution loop for a user's request.
-        This is a "fire-and-forget" method intended for batch processing, like
-        in a Celery task. It loops internally until the `finish_job` tool is
-        called, raising a JobFinishedException.
+        This method now uses `_execute_turn` as its core building block.
         """
         if self.state.initial_prompt is None:
             self.state.initial_prompt = prompt
@@ -114,162 +196,15 @@ class Agent:
         )
         self.context_logger.log_user_prompt(prompt)
 
+        # Prepare the very first input
         current_api_input: List[Dict[str, Any]] = [{"role": "user", "content": prompt}]
         self.state.history.extend(current_api_input)
 
-        while True:
-            try:
-                response = self.client.responses.create(
-                    model=self.model_name,
-                    input=current_api_input,
-                    tools=self.openai_tools_payload,
-                    instructions=final_system_prompt,
-                    previous_response_id=self.state.last_response_id,
-                )
-            except openai.APIError as e:
-                logging.error(f"OpenAI API Error: {e}", exc_info=True)
-                pprint.pprint(e.response.json())
-                self.context_logger.log_tool_result("OpenAI_API", f"FATAL ERROR: {e}")
-                break
+        # The main loop simply calls the core logic block until it stops.
+        while current_api_input:
+            current_api_input = self._execute_turn(current_api_input, final_system_prompt)
+        
+        logging.warning("\nAgent has finished its turn without calling finish_job. This may be an error.")
 
-            self.state.last_response_id = response.id
-            self.context_logger.log_model_response(response)
-            self.state.history.extend([item.model_dump() for item in response.output])
-
-            tool_calls: List[ResponseFunctionToolCall] = [
-                item for item in response.output if item.type == 'function_call'
-            ]
-
-            if not tool_calls:
-                logging.warning("\nAgent has finished its turn without calling finish_job. This may be an error.")
-                break
-
-            tool_outputs_for_api = []
-            self.state.new_file_ids_for_model = []
-
-            for call in tool_calls:
-                tool_to_execute = self.tools.get(call.name)
-                tool_output_string = f"Error: Tool '{call.name}' not found."
-
-                if tool_to_execute:
-                    try:
-                        parsed_args = json.loads(call.arguments)
-                        validated_args = tool_to_execute.args_schema(**parsed_args)
-                        tool_output_string = tool_to_execute.execute(self.state, validated_args, self.client)
-                    except JobFinishedException:
-                        logging.info("`finish_job` tool called. Propagating signal to terminate.")
-                        raise
-                    except Exception as e:
-                        tool_output_string = f"Error executing tool '{call.name}': {e}"
-                        logging.error(f"Error during tool execution for '{call.name}'", exc_info=True)
-
-                self.context_logger.log_tool_result(call.name, tool_output_string)
-
-                tool_outputs_for_api.append({
-                    "type": "function_call_output",
-                    "call_id": call.call_id,
-                    "output": tool_output_string
-                })
-
-            next_api_input = list(tool_outputs_for_api)
-            if self.state.new_file_ids_for_model:
-                multimodal_content = [
-                    {"type": "input_image", "file_id": file_id}
-                    for file_id in self.state.new_file_ids_for_model
-                ]
-                next_api_input.append({"role": "user", "content": multimodal_content})
-
-            current_api_input = next_api_input
-            self.state.history.extend(current_api_input)
-
-    def step(self, prompt: str):
-        """
-        Processes a single turn of the conversation for interactive use (CLI).
-        It takes a user prompt, runs the model until it either calls tools and
-        gets their output, or responds with a text message, and then waits for
-        the next input from the user.
-        """
-        # If this is the first turn, set the initial prompt and log the setup.
-        if not self.state.history:
-            self.state.initial_prompt = prompt
-            final_system_prompt = SYSTEM_PROMPT_TEMPLATE.format(user_request=prompt)
-            self.context_logger.log_initial_setup(
-                model_name=self.model_name,
-                system_prompt=final_system_prompt,
-                tools=self.openai_tools_payload
-            )
-        else:
-            # On subsequent turns, the system prompt remains the same.
-            final_system_prompt = SYSTEM_PROMPT_TEMPLATE.format(user_request=self.state.initial_prompt)
-
-        self.context_logger.log_user_prompt(prompt)
-        current_api_input: List[Dict[str, Any]] = [{"role": "user", "content": prompt}]
-        self.state.history.extend(current_api_input)
-
-        # This loop handles a potential chain of tool calls within a single user turn.
-        while True:
-            try:
-                response = self.client.responses.create(
-                    model=self.model_name,
-                    input=current_api_input,
-                    tools=self.openai_tools_payload,
-                    instructions=final_system_prompt,
-                    previous_response_id=self.state.last_response_id,
-                )
-            except openai.APIError as e:
-                logging.error(f"OpenAI API Error: {e}", exc_info=True)
-                pprint.pprint(e.response.json())
-                self.context_logger.log_tool_result("OpenAI_API", f"FATAL ERROR: {e}")
-                break
-
-            self.state.last_response_id = response.id
-            self.context_logger.log_model_response(response)
-            self.state.history.extend([item.model_dump() for item in response.output])
-
-            tool_calls: List[ResponseFunctionToolCall] = [
-                item for item in response.output if item.type == 'function_call'
-            ]
-
-            # If the model responds with text or no tool calls, its turn is over.
-            # We break the loop and wait for the next user input.
-            if not tool_calls:
-                break
-
-            tool_outputs_for_api = []
-            self.state.new_file_ids_for_model = []
-
-            for call in tool_calls:
-                tool_to_execute = self.tools.get(call.name)
-                tool_output_string = f"Error: Tool '{call.name}' not found."
-
-                if tool_to_execute:
-                    try:
-                        parsed_args = json.loads(call.arguments)
-                        validated_args = tool_to_execute.args_schema(**parsed_args)
-                        tool_output_string = tool_to_execute.execute(self.state, validated_args, self.client)
-                    except JobFinishedException:
-                        logging.info("`finish_job` tool called. Propagating signal to terminate.")
-                        raise # Re-raise to be caught by the CLI's main loop
-                    except Exception as e:
-                        tool_output_string = f"Error executing tool '{call.name}': {e}"
-                        logging.error(f"Error during tool execution for '{call.name}'", exc_info=True)
-
-                self.context_logger.log_tool_result(call.name, tool_output_string)
-
-                tool_outputs_for_api.append({
-                    "type": "function_call_output",
-                    "call_id": call.call_id,
-                    "output": tool_output_string
-                })
-
-            next_api_input = list(tool_outputs_for_api)
-            if self.state.new_file_ids_for_model:
-                multimodal_content = [
-                    {"type": "input_image", "file_id": file_id}
-                    for file_id in self.state.new_file_ids_for_model
-                ]
-                next_api_input.append({"role": "user", "content": multimodal_content})
-
-            # The input for the next iteration of the tool-calling loop is the tool results.
-            current_api_input = next_api_input
-            self.state.history.extend(current_api_input)
+    # --- REMOVED: The old `step` method is gone, replaced by the logic above. ---
+    # We no longer need a separate, duplicative method.
