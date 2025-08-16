@@ -97,7 +97,7 @@ class Agent:
             "parameters": schema,
         }
 
-    # --- NEW: The core, reusable logic block ---
+    # --- REFACTORED: The core, reusable logic block with encapsulated changes ---
     def _execute_turn(self, current_api_input: List[Dict[str, Any]], system_prompt: str) -> List[Dict[str, Any]]:
         """
         Executes a single turn of the agent's logic.
@@ -106,15 +106,26 @@ class Agent:
         3. Returns the input for the *next* turn.
         This is the fundamental building block for both run_to_completion and any future interactive modes.
         """
+        # --- START: MODIFICATION ---
+        # Prepare API parameters. According to Responses API best practices,
+        # the `instructions` should only be sent on the first call of a conversation.
+        # The API then carries the instructions forward in the state managed by `previous_response_id`.
+        api_params = {
+            "model": self.model_name,
+            "input": current_api_input,
+            "tools": self.openai_tools_payload,
+        }
+        if self.state.last_response_id:
+            api_params["previous_response_id"] = self.state.last_response_id
+        else:
+            # This is the first turn, so we include the instructions.
+            api_params["instructions"] = system_prompt
+        # --- END: MODIFICATION ---
+        
         # 1. Call the API
         try:
-            response = self.client.responses.create(
-                model=self.model_name,
-                input=current_api_input,
-                tools=self.openai_tools_payload,
-                instructions=system_prompt,
-                previous_response_id=self.state.last_response_id,
-            )
+            # Use keyword argument unpacking for a cleaner call
+            response = self.client.responses.create(**api_params)
         except openai.RateLimitError:
             logging.warning("Rate limit reached. Waiting for 60 seconds before retrying...")
             time.sleep(60)
@@ -179,7 +190,7 @@ class Agent:
         self.state.history.extend(next_api_input)
         return next_api_input
 
-    # --- REFACTORED: This is now a simple orchestrator ---
+    # --- This is now a simple orchestrator (no changes needed here) ---
     def run_to_completion(self, prompt: str):
         """
         Starts and manages the agent's execution loop for a user's request.
@@ -205,6 +216,3 @@ class Agent:
             current_api_input = self._execute_turn(current_api_input, final_system_prompt)
         
         logging.warning("\nAgent has finished its turn without calling finish_job. This may be an error.")
-
-    # --- REMOVED: The old `step` method is gone, replaced by the logic above. ---
-    # We no longer need a separate, duplicative method.
