@@ -59,6 +59,7 @@ class AgentContextLogger:
     def _write_readable(self, message: str):
         """Writes a message to the readable log and streams it if a logger is configured."""
         self.readable_log_file.write(message)
+        self.readable_log_file.flush()  # <-- FIX: Ensure data is written to disk immediately.
         if self.stream_logger:
             # We strip leading/trailing newlines for cleaner console output
             self.stream_logger.info(message.strip())
@@ -71,6 +72,7 @@ class AgentContextLogger:
             **data
         }
         self.raw_log_file.write(json.dumps(log_entry, ensure_ascii=False) + "\n")
+        self.raw_log_file.flush() # Also good practice to flush the raw log.
 
     def log_initial_setup(self, model_name: str, system_prompt: str, tools: List[Dict[str, Any]]):
         """
@@ -121,7 +123,8 @@ class AgentContextLogger:
             "======================================================================"
         ])
         
-        self.readable_log_file.write("\n".join(header))
+        # Use _write_readable to ensure it gets flushed
+        self._write_readable("\n".join(header))
 
         # --- Real-time Stream (Gets a concise message) ---
         if self.stream_logger:
