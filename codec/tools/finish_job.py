@@ -191,7 +191,7 @@ class FinishJobTool(BaseTool):
         }
 
     def _create_otio_clip(self, codec_clip: TimelineClip, timeline_fps: float, base_path_for_relinking: Path, consolidated: bool) -> otio.schema.Clip:
-        """Creates a single OTIO clip from a TimelineClip, handling path relinking."""
+        """Creates a single OTIO clip from a TimelineClip, handling path relinking and custom metadata."""
         def _rt(sec: float): return otio.opentime.from_seconds(sec, rate=timeline_fps)
         
         if consolidated:
@@ -214,4 +214,17 @@ class FinishJobTool(BaseTool):
             media_ref_meta["audio"] = {"samplecharacteristics": {"samplerate": "48000"}}
 
         source_range = otio.opentime.TimeRange(start_time=_rt(codec_clip.source_in_sec), duration=_rt(codec_clip.duration_sec))
-        return otio.schema.Clip(name=codec_clip.clip_id, media_reference=media_ref, source_range=source_range)
+        
+        otio_clip = otio.schema.Clip(name=codec_clip.clip_id, media_reference=media_ref, source_range=source_range)
+
+        # --- MODIFICATION: Serialize transformation data into the clip's metadata ---
+        if codec_clip.transformations:
+            # Serialize our Keyframe objects into a list of simple dicts.
+            # This makes the OTIO file clean and easily parsable by other tools.
+            transforms_data = [
+                kf.model_dump(exclude_none=True) for kf in codec_clip.transformations
+            ]
+            otio_clip.metadata['codec_transforms'] = transforms_data
+        # --- END MODIFICATION ---
+
+        return otio_clip

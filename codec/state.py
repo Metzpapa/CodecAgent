@@ -3,6 +3,25 @@ from typing import List, Optional, Literal, Tuple, Dict, Any
 from pydantic import BaseModel, Field
 
 
+class Keyframe(BaseModel):
+    """
+    Represents a single transformation keyframe for a clip.
+    Time is relative to the start of the clip on the timeline (0.0 seconds).
+    """
+    time_sec: float = Field(
+        ...,
+        description="The time of this keyframe in seconds, relative to the start of the clip (0.0)."
+    )
+    interpolation: Literal["linear", "easy ease", "hold"] = "easy ease"
+    
+    # Optional transformation properties
+    position: Optional[Tuple[float, float]] = Field(None, description="(x, y) in normalized coordinates (-1 to 1)")
+    scale: Optional[float] = Field(None, description="1.0 is original size")
+    rotation: Optional[float] = Field(None, description="In degrees")
+    opacity: Optional[float] = Field(None, description="0.0 to 1.0")
+    anchor_point: Optional[Tuple[float, float]] = Field(None, description="(x, y) in normalized coordinates")
+
+
 class TimelineClip(BaseModel):
     """
     Represents a single clip placed on the main timeline, analogous to a clip
@@ -35,6 +54,11 @@ class TimelineClip(BaseModel):
     has_audio: bool = Field(
         ...,
         description="Flag indicating if the original source file for this clip contains an audio stream."
+    )
+    # --- NEW FIELD ---
+    transformations: List[Keyframe] = Field(
+        default_factory=list,
+        description="A list of transformation keyframes applied to this clip."
     )
 
 
