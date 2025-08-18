@@ -117,10 +117,10 @@ class TransformTool(BaseTool):
         with tempfile.TemporaryDirectory() as tmpdir:
             for transform_info in applied_transformations:
                 try:
-                    file_id = self._generate_and_upload_preview_frame(
+                    file_id, local_path = self._generate_and_upload_preview_frame(
                         state, client, transform_info['clip'], transform_info['timeline_sec'], tmpdir
                     )
-                    state.new_file_ids_for_model.append(file_id)
+                    state.new_multimodal_files.append((file_id, local_path))
                     state.uploaded_files.append(file_id)
                     preview_count += 1
                 except Exception as e:
@@ -139,7 +139,7 @@ class TransformTool(BaseTool):
     # --- HELPER METHOD FOR VISUAL FEEDBACK ---
     def _generate_and_upload_preview_frame(
         self, state: 'State', client: openai.OpenAI, clip: TimelineClip, timeline_sec: float, tmpdir: str
-    ) -> str:
+    ) -> Tuple[str, str]:
         """
         Renders a single frame of a clip with its transformations applied at a specific timeline second.
         """
@@ -204,4 +204,4 @@ class TransformTool(BaseTool):
         with open(final_frame_path, "rb") as f:
             uploaded_file = client.files.create(file=f, purpose="vision")
         
-        return uploaded_file.id
+        return uploaded_file.id, str(final_frame_path)

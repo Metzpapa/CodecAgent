@@ -27,7 +27,7 @@ def _extract_and_upload_frame(
     display_name: str,
     client: openai.OpenAI,
     tmpdir: str
-) -> str:
+) -> Tuple[str, str]:
     """
     Core reusable logic to extract a single frame from a video file, save it
     temporarily, and upload it using the provided LLM connector.
@@ -46,7 +46,7 @@ def _extract_and_upload_frame(
         with open(output_path, "rb") as f:
             uploaded_file = client.files.create(file=f, purpose="vision")
         logging.info(f"Upload complete for '{display_name}'. ID: {uploaded_file.id}")
-        return uploaded_file.id
+        return uploaded_file.id, str(output_path)
 
     except Exception as e:
         error_msg = f"Failed to extract or upload frame for '{display_name}' at {timestamp_sec:.3f}s. Details: {e}"
@@ -173,13 +173,12 @@ class ViewVideoTool(BaseTool):
             
             successful_uploads = 0
             for ts, result_or_error in upload_results:
-                # The result is now either a file_id string or an error string
-                if "unexpected system error" not in str(result_or_error):
-                    file_id = result_or_error
+                if isinstance(result_or_error, tuple):
+                    file_id, local_path = result_or_error
                     # Add to state for cleanup
                     state.uploaded_files.append(file_id)
                     # Add to state for the agent to use in the next API call
-                    state.new_file_ids_for_model.append(file_id)
+                    state.new_multimodal_files.append((file_id, local_path))
                     successful_uploads += 1
                 else:
                     logging.warning(f"  - Failed to process frame at {ts:.3f}s: {result_or_error}")

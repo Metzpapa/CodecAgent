@@ -79,7 +79,7 @@ class VisualizeTimelineTool(BaseTool):
             
             file_id = uploaded_file.id
             state.uploaded_files.append(file_id)
-            state.new_file_ids_for_model.append(file_id)
+            state.new_multimodal_files.append((file_id, tmp_file_path))
 
             return "Successfully generated and uploaded a visual representation of the timeline. The agent can now view it."
 

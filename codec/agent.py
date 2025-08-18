@@ -15,7 +15,7 @@ from typing import Dict, List, Any
 # Direct OpenAI import
 import openai
 # --- MODIFICATION: Import specific error types for granular handling ---
-from openai import RateLimitError, InternalServerError, APITimeoutError, ServiceUnavailableError, APIError
+from openai import RateLimitError, InternalServerError, APITimeoutError, APIError
 from openai.types.responses import ResponseFunctionToolCall
 
 # Local imports
@@ -171,7 +171,7 @@ class Agent:
                     backoff_delay *= 2
             
             # --- NEW: Handle transient server-side errors ---
-            except (InternalServerError, APITimeoutError, ServiceUnavailableError) as e:
+            except (InternalServerError, APITimeoutError) as e:
                 num_retries += 1
                 current_wait = backoff_delay + random.uniform(0, 1)
                 self.context_logger.log_server_error_retry(
@@ -208,7 +208,7 @@ class Agent:
             return []
 
         tool_outputs_for_api = []
-        self.state.new_file_ids_for_model = []
+        self.state.new_multimodal_files = []
 
         for call in tool_calls:
             tool_to_execute = self.tools.get(call.name)
@@ -234,10 +234,15 @@ class Agent:
             })
 
         next_api_input = list(tool_outputs_for_api)
-        if self.state.new_file_ids_for_model:
+        if self.state.new_multimodal_files:
+            # Log the images before sending them to the model
+            local_paths = [path for _, path in self.state.new_multimodal_files]
+            self.context_logger.log_multimodal_request(local_paths)
+
+            # Prepare the content for the API
             multimodal_content = [
                 {"type": "input_image", "file_id": file_id}
-                for file_id in self.state.new_file_ids_for_model
+                for file_id, _ in self.state.new_multimodal_files
             ]
             next_api_input.append({"role": "user", "content": multimodal_content})
         

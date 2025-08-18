@@ -1,6 +1,7 @@
 # codec/backend/agent_logging.py
 import json
 import logging
+import shutil
 from pathlib import Path
 from datetime import datetime
 from typing import Any, List, Dict, Optional
@@ -31,10 +32,17 @@ class AgentContextLogger:
         self.job_id = job_id
         self.stream_logger = stream_logger
         
-        logs_dir.mkdir(parents=True, exist_ok=True)
+        # --- MODIFICATION: Create a dedicated directory for the job ---
+        self.job_logs_dir = logs_dir / job_id
+        self.job_logs_dir.mkdir(parents=True, exist_ok=True)
         
-        raw_log_path = logs_dir / f"{job_id}.agent.raw.log"
-        readable_log_path = logs_dir / f"{job_id}.agent.readable.log"
+        self.multimodal_logs_dir = self.job_logs_dir / "multimodal_logs"
+        self.multimodal_logs_dir.mkdir(exist_ok=True)
+        self.multimodal_request_counter = 0
+
+        raw_log_path = self.job_logs_dir / "agent.raw.log"
+        readable_log_path = self.job_logs_dir / "agent.readable.log"
+        # --- END MODIFICATION ---
 
         self.raw_log_file = raw_log_path.open("a", encoding="utf-8")
         self.readable_log_file = readable_log_path.open("a", encoding="utf-8")
@@ -102,7 +110,7 @@ class AgentContextLogger:
         if self.stream_logger:
             self.stream_logger.info("======================================================================")
             self.stream_logger.info(f"AGENT SESSION STARTING FOR JOB: {self.job_id}")
-            self.stream_logger.info(f"Full logs are being written to: logs/{self.job_id}.agent.readable.log")
+            self.stream_logger.info(f"Full logs are being written to: {self.job_logs_dir.resolve() / 'agent.readable.log'}")
             self.stream_logger.info("======================================================================")
 
 
@@ -110,6 +118,47 @@ class AgentContextLogger:
         """Logs the initial user request."""
         self._write_raw("user_prompt", {"prompt": prompt})
         self._write_readable(f"\n\nUser: {prompt}")
+
+    def log_multimodal_request(self, local_file_paths: List[str]) -> None:
+        """
+        Logs the images being sent to the model for a single request.
+        It copies the images to a dedicated folder and links to it in the logs.
+        """
+        if not local_file_paths:
+            return
+
+        self.multimodal_request_counter += 1
+        request_dir_name = f"request_{self.multimodal_request_counter:02d}"
+        request_dir_path = self.multimodal_logs_dir / request_dir_name
+        request_dir_path.mkdir()
+
+        copied_files = []
+        for i, local_path_str in enumerate(local_file_paths):
+            try:
+                local_path = Path(local_path_str)
+                # Use a generic name in case of collisions from temp files
+                dest_path = request_dir_path / f"image_{i+1:03d}{local_path.suffix}"
+                shutil.copy2(local_path, dest_path)
+                copied_files.append(str(dest_path.resolve()))
+            except Exception as e:
+                logging.error(f"Could not copy multimodal log file from '{local_path_str}': {e}")
+                copied_files.append(f"ERROR_COPYING_{Path(local_path_str).name}")
+
+        log_data = {
+            "request_index": self.multimodal_request_counter,
+            "image_count": len(local_file_paths),
+            "log_directory": str(request_dir_path.resolve()),
+            "source_files": local_file_paths,
+            "copied_files": copied_files
+        }
+        self._write_raw("multimodal_request", log_data)
+
+        readable_message = (
+            f"\n\n[Multimodal Input]\n"
+            f"  - The model was shown {len(local_file_paths)} image(s).\n"
+            f"  - View them here: {str(request_dir_path.resolve())}"
+        )
+        self._write_readable(readable_message)
 
     def log_model_response(self, response: Any):
         """Logs the model's response, which can be a mix of text and tool calls."""

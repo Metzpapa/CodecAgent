@@ -89,10 +89,11 @@ class State:
         # This ID is the key to stateful conversations with the OpenAI Responses API.
         self.last_response_id: Optional[str] = None
 
-        # --- NEW: A temporary list for agent-tool communication ---
-        # Tools that generate multimodal output will add file IDs here. The agent
-        # will then use this list to construct the next user message for the API.
-        self.new_file_ids_for_model: List[str] = []
+        # --- MODIFICATION: A temporary list for agent-tool-logger communication ---
+        # Tools that generate multimodal output will add (file_id, local_path) tuples here.
+        # The agent will use this list to construct the next user message for the API,
+        # and the logger will use it to archive the visual inputs.
+        self.new_multimodal_files: List[Tuple[str, str]] = []
 
     def _sort_timeline(self):
         """

@@ -2,7 +2,7 @@
 
 import os
 import ffmpeg
-from typing import Optional, TYPE_CHECKING
+from typing import Optional, TYPE_CHECKING, Tuple
 import openai
 import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -120,7 +120,7 @@ class ViewTimelineTool(BaseTool):
         with tempfile.TemporaryDirectory() as tmpdir:
             logging.info(f"Starting batch extraction for {len(frames_by_source)} source files...")
             
-            upload_results = {} # Maps timeline_ts -> result (File or error string)
+            upload_results = {} # Maps timeline_ts -> result (Tuple or error string)
             with ThreadPoolExecutor(max_workers=16) as executor:
                 future_to_ts = {}
                 for source_path, tasks in frames_by_source.items():
@@ -165,10 +165,10 @@ class ViewTimelineTool(BaseTool):
                 result = upload_results.get(ts)
                 track_name = f"V{clip.track_number}"
                 
-                if isinstance(result, str) and "Failed" not in result:
-                    file_id = result
+                if result and not isinstance(result, str):
+                    file_id, local_path = result
                     state.uploaded_files.append(file_id)
-                    state.new_file_ids_for_model.append(file_id)
+                    state.new_multimodal_files.append((file_id, local_path))
                     successful_frames += 1
                     logging.info(f"Timeline at {ts:.3f}s (from clip: '{clip.clip_id}' on track {track_name})")
                 else:
@@ -183,11 +183,11 @@ class ViewTimelineTool(BaseTool):
                 f"of the timeline. The agent can now view them."
             )
 
-    def _upload_file_from_path(self, file_path: Path, display_name: str, client: openai.OpenAI) -> str:
+    def _upload_file_from_path(self, file_path: Path, display_name: str, client: openai.OpenAI) -> Tuple[str, str]:
         """Helper to upload a single file, intended for use in the executor."""
         try:
             with open(file_path, "rb") as f:
                 uploaded_file = client.files.create(file=f, purpose="vision")
-            return uploaded_file.id
+            return uploaded_file.id, str(file_path)
         except Exception as e:
-            return f"Failed to upload file. Details: {str(e)}"
+            raise IOError(f"Failed to upload file. Details: {str(e)}") from e

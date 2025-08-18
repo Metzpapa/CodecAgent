@@ -237,7 +237,7 @@ class FindMediaTool(BaseTool):
                 "job_ids": job_ids_for_this_result
             })
 
-        uploaded_frames: Dict[str, str] = {}
+        uploaded_frames: Dict[str, Any] = {}
         with tempfile.TemporaryDirectory() as tmpdir:
             with ThreadPoolExecutor(max_workers=8) as executor:
                 future_to_job = {
@@ -262,10 +262,10 @@ class FindMediaTool(BaseTool):
 
             for job_id in result_data['job_ids']:
                 result = uploaded_frames.get(job_id)
-                if result and "System error" not in result:
-                    file_id = result
+                if result and not isinstance(result, str):
+                    file_id, local_path = result
                     state.uploaded_files.append(file_id)
-                    state.new_file_ids_for_model.append(file_id)
+                    state.new_multimodal_files.append((file_id, local_path))
                     successful_frames += 1
                 else:
                     logging.warning(f"  - Failed to generate frame: {result or 'Unknown error'}")
@@ -295,7 +295,7 @@ class FindMediaTool(BaseTool):
         job: Dict[str, Any],
         client: openai.OpenAI,
         tmpdir: str
-    ) -> str:
+    ) -> Tuple[str, str]:
         output_path = Path(tmpdir) / f"{job['id']}.jpg"
         try:
             (
@@ -307,7 +307,7 @@ class FindMediaTool(BaseTool):
             logging.info(f"Uploading frame: {job['display_name']}")
             with open(output_path, "rb") as f:
                 uploaded_file = client.files.create(file=f, purpose="vision")
-            return uploaded_file.id
+            return uploaded_file.id, str(output_path)
 
         except ffmpeg.Error as e:
             error_msg = f"FFmpeg failed to extract frame. Stderr: {e.stderr.decode()}"
