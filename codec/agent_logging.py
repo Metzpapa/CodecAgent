@@ -1,11 +1,10 @@
-# codecagent/backend/agent_logging.py
+# codec/backend/agent_logging.py
 import json
 import logging
 from pathlib import Path
 from datetime import datetime
 from typing import Any, List, Dict, Optional
 
-# --- MODIFIED: A more robust pretty-printing helper ---
 def _pretty_json(data: Any) -> str:
     """
     Takes a Python object or a JSON string and returns a
@@ -13,32 +12,17 @@ def _pretty_json(data: Any) -> str:
     """
     if isinstance(data, str):
         try:
-            # If it's a string, parse it into a Python object first
             data = json.loads(data)
         except (json.JSONDecodeError, TypeError):
-            # If it's not a valid JSON string, return it as is.
             return str(data)
     
-    # Now, `data` is guaranteed to be a Python object (dict, list, etc.)
-    # Dump it to a nicely formatted string.
     return json.dumps(data, indent=2, ensure_ascii=False)
 
 
 class AgentContextLogger:
     """
     Manages a dual-logging system for an agent's execution session.
-
-    1.  **Raw Log (`.raw.log`):** A machine-readable log where each line is a
-        JSON object representing a single event (e.g., setup, model output,
-        tool result). This is for perfect, high-fidelity debugging.
-
-    2.  **Readable Log (`.readable.log`):** A human-friendly, narrative log
-        that tells the story of the agent's "conversation." This is for
-        high-level understanding and sharing.
-
-    3.  **Stream Logging:** It can optionally stream the readable log's content
-        to a provided logger instance (like a Celery task logger) for
-        real-time console output.
+    ...
     """
     def __init__(self,
                  job_id: str,
@@ -52,16 +36,14 @@ class AgentContextLogger:
         raw_log_path = logs_dir / f"{job_id}.agent.raw.log"
         readable_log_path = logs_dir / f"{job_id}.agent.readable.log"
 
-        # Open files in append mode to be robust against restarts
         self.raw_log_file = raw_log_path.open("a", encoding="utf-8")
         self.readable_log_file = readable_log_path.open("a", encoding="utf-8")
 
     def _write_readable(self, message: str):
         """Writes a message to the readable log and streams it if a logger is configured."""
         self.readable_log_file.write(message)
-        self.readable_log_file.flush()  # <-- FIX: Ensure data is written to disk immediately.
+        self.readable_log_file.flush()
         if self.stream_logger:
-            # We strip leading/trailing newlines for cleaner console output
             self.stream_logger.info(message.strip())
 
     def _write_raw(self, event_type: str, data: Dict[str, Any]):
@@ -72,15 +54,10 @@ class AgentContextLogger:
             **data
         }
         self.raw_log_file.write(json.dumps(log_entry, ensure_ascii=False) + "\n")
-        self.raw_log_file.flush() # Also good practice to flush the raw log.
+        self.raw_log_file.flush()
 
     def log_initial_setup(self, model_name: str, system_prompt: str, tools: List[Dict[str, Any]]):
-        """
-        Logs the one-time setup information for the session.
-        Writes the full header to the file log, but only a concise
-        message to the real-time stream.
-        """
-        # --- Raw Log (Always gets the full data) ---
+        """Logs the one-time setup information for the session."""
         self._write_raw("initial_setup", {
             "job_id": self.job_id,
             "model": model_name,
@@ -88,7 +65,6 @@ class AgentContextLogger:
             "tools": tools
         })
 
-        # --- Readable Log File (Gets the full header) ---
         header = [
             "======================================================================",
             "                    CODEC AGENT SESSION LOG",
@@ -109,9 +85,7 @@ class AgentContextLogger:
             header.append(f"- Tool: {tool.get('name', 'N/A')}")
             header.append(f"  Description: {tool.get('description', 'N/A')}")
             params = tool.get('parameters', {})
-            # Don't show empty properties dict for cleaner output
             if 'properties' in params and params.get('properties'):
-                 # --- THIS LINE NOW WORKS CORRECTLY ---
                  header.append(f"  Parameters:\n{_pretty_json(params)}")
             else:
                 header.append("  Parameters: {}")
@@ -123,10 +97,8 @@ class AgentContextLogger:
             "======================================================================"
         ])
         
-        # Use _write_readable to ensure it gets flushed
         self._write_readable("\n".join(header))
 
-        # --- Real-time Stream (Gets a concise message) ---
         if self.stream_logger:
             self.stream_logger.info("======================================================================")
             self.stream_logger.info(f"AGENT SESSION STARTING FOR JOB: {self.job_id}")
@@ -164,6 +136,63 @@ class AgentContextLogger:
         
         indented_result = "\n".join([f"  {line}" for line in result_string.strip().split('\n')])
         self._write_readable(f"\n\nTool Result:\n{indented_result}")
+
+    def log_rate_limit_body_hit(self, error_message: str, wait_duration_s: float):
+        """Logs when a rate limit has been hit and the agent is pausing based on the error body."""
+        
+        log_data = {
+            "strategy": "body_based",
+            "error_message": error_message,
+            "wait_duration_s": wait_duration_s
+        }
+        self._write_raw("rate_limit_hit", log_data)
+
+        readable_message = (
+            f"\n\n[System Notice: Rate Limit Reached (Body-based wait)]\n"
+            f"  - API Message: \"{error_message}\"\n"
+            f"  - Pausing execution for {wait_duration_s:.2f} seconds before retrying."
+        )
+        self._write_readable(readable_message)
+
+    def log_rate_limit_fallback(self, attempt: int, max_attempts: int, wait_duration_s: float):
+        """Logs when a rate limit has been hit and the agent is using exponential backoff."""
+        
+        log_data = {
+            "strategy": "exponential_backoff",
+            "attempt": attempt,
+            "max_attempts": max_attempts,
+            "wait_duration_s": wait_duration_s
+        }
+        self._write_raw("rate_limit_hit", log_data)
+
+        readable_message = (
+            f"\n\n[System Notice: Rate Limit Reached (Fallback wait)]\n"
+            f"  - Body parsing failed. Using exponential backoff.\n"
+            f"  - Retry attempt {attempt}/{max_attempts}. Pausing for {wait_duration_s:.2f} seconds."
+        )
+        self._write_readable(readable_message)
+
+    # --- NEW LOGGING METHOD ---
+    def log_server_error_retry(self, error: Exception, attempt: int, max_attempts: int, wait_duration_s: float):
+        """Logs when a transient server error occurs and the agent is retrying."""
+        
+        log_data = {
+            "strategy": "server_error_backoff",
+            "error_type": type(error).__name__,
+            "error_message": str(error),
+            "attempt": attempt,
+            "max_attempts": max_attempts,
+            "wait_duration_s": wait_duration_s
+        }
+        self._write_raw("server_error_retry", log_data)
+
+        readable_message = (
+            f"\n\n[System Notice: OpenAI Server Error (Retrying)]\n"
+            f"  - Error: {type(error).__name__}\n"
+            f"  - Retry attempt {attempt}/{max_attempts}. Pausing for {wait_duration_s:.2f} seconds."
+        )
+        self._write_readable(readable_message)
+    # --- END NEW METHOD ---
 
     def log_session_end(self):
         """Logs a footer to signify the end of the session."""

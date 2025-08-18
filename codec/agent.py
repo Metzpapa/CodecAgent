@@ -8,10 +8,14 @@ import json
 import pprint
 import logging
 import time
+import re
+import random
 from typing import Dict, List, Any
 
 # Direct OpenAI import
 import openai
+# --- MODIFICATION: Import specific error types for granular handling ---
+from openai import RateLimitError, InternalServerError, APITimeoutError, ServiceUnavailableError, APIError
 from openai.types.responses import ResponseFunctionToolCall
 
 # Local imports
@@ -23,22 +27,37 @@ from .agent_logging import AgentContextLogger
 
 
 SYSTEM_PROMPT_TEMPLATE = """
-You are codec, a autonomous agent that edits videos.
 Users Request:
 {user_request}
-To complete the job, you MUST call the `finish_job` tool. This is your final step.
-You can use it to either export a finished timeline and provide a success message,
-or to explain why the request could not be completed.
+You are codec, a skilled and autonomous video editing agent. Your single purpose is to fulfill the user's request and produce a video.
+
+**Core Directives:**
+1.  **You MUST end every job by calling the `finish_job` tool.** This is your only method of communication with the user and it is non-negotiable.
+2.  **NEVER ask for clarification.** The user's request is your complete set of instructions. Interpret it to the best of your ability and act.
+3.  **A "best effort" video is REQUIRED.** It is always better to deliver an imperfect or "rough draft" video than to ask a question or report a minor failure. The user will provide feedback by submitting a new job.
+4.  **If your first attempt fails, TRY AGAIN.** If an action results in an error (like a black frame from a bad crop), analyze the error, adjust your parameters, and execute the action again. Do not give up and ask the user for help. 
 """
+
+def _parse_wait_time_from_error_message(message: str) -> float:
+    """
+    Parses the wait time from OpenAI's rate limit error message.
+    Example: "Please try again in 31.402s." -> 31.402
+    Example: "Please try again in 110ms." -> 0.110
+    Returns the time in seconds as a float, or 0.0 if not found.
+    """
+    match = re.search(r"Please try again in ([\d.]+)(ms|s)", message)
+    if not match:
+        return 0.0
+
+    value = float(match.group(1))
+    unit = match.group(2)
+
+    if unit == "ms":
+        return value / 1000.0
+    return value
 
 
 class Agent:
-    """
-    The core AI agent, now refactored to support both batch and interactive execution.
-    All provider-agnostic abstractions have been removed to increase prototyping
-    velocity and reduce complexity.
-    """
-
     def __init__(self, state: State, context_logger: AgentContextLogger):
         """
         Initializes the agent, setting up the OpenAI client and loading all
@@ -58,8 +77,9 @@ class Agent:
             raise ValueError(error_msg)
 
         logging.info("Using OpenAI Responses API (Stateful).")
-        self.client = openai.OpenAI(api_key=api_key)
-        self.model_name = os.environ.get("OPENAI_MODEL_NAME", "gpt-4.1-vision")
+        self.client = openai.OpenAI(api_key=api_key, max_retries=0)
+        
+        self.model_name = os.environ.get("OPENAI_MODEL_NAME", "gpt-5")
 
         logging.info("Loading tools...")
         self.tools = self._load_tools()
@@ -97,19 +117,10 @@ class Agent:
             "parameters": schema,
         }
 
-    # --- REFACTORED: The core, reusable logic block with encapsulated changes ---
     def _execute_turn(self, current_api_input: List[Dict[str, Any]], system_prompt: str) -> List[Dict[str, Any]]:
         """
-        Executes a single turn of the agent's logic.
-        1. Calls the OpenAI API.
-        2. Processes the response (which might involve executing tools).
-        3. Returns the input for the *next* turn.
-        This is the fundamental building block for both run_to_completion and any future interactive modes.
+        Executes a single turn of the agent's logic with a custom retry loop.
         """
-        # --- START: MODIFICATION ---
-        # Prepare API parameters. According to Responses API best practices,
-        # the `instructions` should only be sent on the first call of a conversation.
-        # The API then carries the instructions forward in the state managed by `previous_response_id`.
         api_params = {
             "model": self.model_name,
             "input": current_api_input,
@@ -118,24 +129,71 @@ class Agent:
         if self.state.last_response_id:
             api_params["previous_response_id"] = self.state.last_response_id
         else:
-            # This is the first turn, so we include the instructions.
             api_params["instructions"] = system_prompt
-        # --- END: MODIFICATION ---
         
-        # 1. Call the API
-        try:
-            # Use keyword argument unpacking for a cleaner call
-            response = self.client.responses.create(**api_params)
-        except openai.RateLimitError:
-            logging.warning("Rate limit reached. Waiting for 60 seconds before retrying...")
-            time.sleep(60)
-            # On retry, we want to use the same input again.
-            return current_api_input
-        except openai.APIError as e:
-            logging.error(f"OpenAI API Error: {e}", exc_info=True)
-            pprint.pprint(e.response.json())
-            self.context_logger.log_tool_result("OpenAI_API", f"FATAL ERROR: {e}")
-            # Return an empty list to signal a fatal error and stop the loop.
+        max_retries = 6
+        num_retries = 0
+        backoff_delay = 1.0
+        response = None
+
+        while num_retries < max_retries:
+            try:
+                response = self.client.responses.create(**api_params)
+                break
+            
+            except RateLimitError as e:
+                num_retries += 1
+                wait_time = 0.0
+                error_message = ""
+
+                try:
+                    body = e.response.json()
+                    error_message = body.get("error", {}).get("message", "")
+                    wait_time = _parse_wait_time_from_error_message(error_message)
+                except (json.JSONDecodeError, AttributeError):
+                    pass
+
+                if wait_time > 0:
+                    wait_time += 0.5
+                    self.context_logger.log_rate_limit_body_hit(
+                        error_message=error_message,
+                        wait_duration_s=wait_time
+                    )
+                    time.sleep(wait_time)
+                else:
+                    current_wait = backoff_delay + random.uniform(0, 1)
+                    self.context_logger.log_rate_limit_fallback(
+                        attempt=num_retries,
+                        max_attempts=max_retries,
+                        wait_duration_s=current_wait
+                    )
+                    time.sleep(current_wait)
+                    backoff_delay *= 2
+            
+            # --- NEW: Handle transient server-side errors ---
+            except (InternalServerError, APITimeoutError, ServiceUnavailableError) as e:
+                num_retries += 1
+                current_wait = backoff_delay + random.uniform(0, 1)
+                self.context_logger.log_server_error_retry(
+                    error=e,
+                    attempt=num_retries,
+                    max_attempts=max_retries,
+                    wait_duration_s=current_wait
+                )
+                time.sleep(current_wait)
+                backoff_delay *= 2
+            # --- END NEW BLOCK ---
+
+            except APIError as e:
+                # This will now catch fatal client-side errors (4xx) that are not RateLimitError
+                logging.error(f"Fatal OpenAI API Error: {e}", exc_info=True)
+                pprint.pprint(e.response.json())
+                self.context_logger.log_tool_result("OpenAI_API", f"FATAL ERROR: {e}")
+                return []
+
+        if not response:
+            logging.error(f"Failed to get a response from OpenAI after {max_retries} retries.")
+            self.context_logger.log_tool_result("OpenAI_API", f"FATAL ERROR: Max retries ({max_retries}) exceeded.")
             return []
 
         self.state.last_response_id = response.id
@@ -146,11 +204,9 @@ class Agent:
             item for item in response.output if item.type == 'function_call'
         ]
 
-        # If no tool calls, the agent's turn is over. Return empty to stop the loop.
         if not tool_calls:
             return []
 
-        # 2. Process tool calls
         tool_outputs_for_api = []
         self.state.new_file_ids_for_model = []
 
@@ -164,7 +220,6 @@ class Agent:
                     validated_args = tool_to_execute.args_schema(**parsed_args)
                     tool_output_string = tool_to_execute.execute(self.state, validated_args, self.client)
                 except JobFinishedException:
-                    # Propagate the exception to be caught by the high-level orchestrator.
                     raise
                 except Exception as e:
                     tool_output_string = f"Error executing tool '{call.name}': {e}"
@@ -178,7 +233,6 @@ class Agent:
                 "output": tool_output_string
             })
 
-        # 3. Prepare and return the input for the next turn
         next_api_input = list(tool_outputs_for_api)
         if self.state.new_file_ids_for_model:
             multimodal_content = [
@@ -190,7 +244,6 @@ class Agent:
         self.state.history.extend(next_api_input)
         return next_api_input
 
-    # --- This is now a simple orchestrator (no changes needed here) ---
     def run_to_completion(self, prompt: str):
         """
         Starts and manages the agent's execution loop for a user's request.
@@ -207,11 +260,9 @@ class Agent:
         )
         self.context_logger.log_user_prompt(prompt)
 
-        # Prepare the very first input
         current_api_input: List[Dict[str, Any]] = [{"role": "user", "content": prompt}]
         self.state.history.extend(current_api_input)
 
-        # The main loop simply calls the core logic block until it stops.
         while current_api_input:
             current_api_input = self._execute_turn(current_api_input, final_system_prompt)
         
