@@ -22,11 +22,32 @@ if TYPE_CHECKING:
 
 class TransformProperties(BaseModel):
     """A dictionary of properties to set for a keyframe."""
-    position: Optional[List[float]] = Field(None, min_length=2, max_length=2)
-    scale: Optional[float] = None
-    rotation: Optional[float] = None
-    opacity: Optional[float] = None
-    anchor_point: Optional[List[float]] = Field(None, min_length=2, max_length=2)
+    position: Optional[List[float]] = Field(
+        None,
+        min_length=2,
+        max_length=2,
+        description="The [x, y] position of the clip's anchor point in pixels. The origin (0,0) is the top-left corner of the sequence."
+    )
+    scale: Optional[float] = Field(
+        None,
+        description="The scale of the clip as a multiplier. 1.0 is original size) 0.5 is half size, 2.0 is double size."
+    )
+    rotation: Optional[float] = Field(
+        None,
+        description="The rotation of the clip in degrees. Positive values rotate clockwise."
+    )
+    # --- FIX: Make the opacity description unambiguous, standardizing on 0-100 ---
+    opacity: Optional[float] = Field(
+        None,
+        description="The opacity of the clip as a percentage, from 0 (transparent) to 100 (opaque)."
+    )
+    # --- END FIX ---
+    anchor_point: Optional[List[float]] = Field(
+        None,
+        min_length=2,
+        max_length=2,
+        description="The [x, y] anchor point within the clip itself in pixels, relative to its top-left corner. By default, this is the clip's center."
+    )
 
 
 class Transformation(BaseModel):
@@ -145,14 +166,9 @@ class TransformTool(BaseTool):
         # 1. Determine source time and extract the raw frame
         source_time_sec = clip.source_in_sec + (timeline_sec - clip.timeline_start_sec)
 
-        # --- FIX: CLAMP THE SOURCE TIME TO PREVENT FILE NOT FOUND ERRORS ---
-        # If the requested time is at or beyond the clip's duration, step back one frame.
         one_frame_duration = 1.0 / clip.source_frame_rate if clip.source_frame_rate > 0 else 0.04
         max_source_time = clip.source_total_duration_sec - one_frame_duration
-        
-        # Clamp the time to be within the valid range [0, max_source_time]
         source_time_sec = max(0, min(source_time_sec, max_source_time))
-        # --- END FIX ---
 
         raw_frame_path = Path(tmpdir) / f"raw_{clip.clip_id}_{timeline_sec:.3f}.jpg"
 
@@ -169,29 +185,48 @@ class TransformTool(BaseTool):
         clip_relative_sec = timeline_sec - clip.timeline_start_sec
         active_kfs = [kf for kf in clip.transformations if kf.time_sec <= clip_relative_sec + 0.001]
         
-        final_props = {"scale": 1.0, "rotation": 0.0, "opacity": 1.0, "position": (0.0, 0.0), "anchor_point": (0.0, 0.0)}
+        frame_img = Image.open(raw_frame_path)
+        seq_w, seq_h = state.get_sequence_properties()[1:]
+        
+        # Set default properties based on sequence and clip dimensions
+        final_props = {
+            "scale": 1.0, "rotation": 0.0, "opacity": 100.0, # Default to 100% opaque
+            "position": (seq_w / 2, seq_h / 2),
+            "anchor_point": (frame_img.width / 2, frame_img.height / 2)
+        }
         for kf in sorted(active_kfs, key=lambda k: k.time_sec):
             final_props.update(kf.model_dump(exclude_none=True))
 
-        # 3. Apply transformations using Pillow
-        frame_img = Image.open(raw_frame_path)
+        # --- NEW: Unambiguously handle opacity and convert pixel coordinates ---
+        # Unconditionally convert 0-100 scale to 0.0-1.0 for rendering
+        opacity_norm = final_props['opacity'] / 100.0
         
+        # Convert pixel-based position to normalized centered coordinates for rendering
+        pos_x_norm = (final_props['position'][0] / (seq_w / 2.0)) - 1.0
+        pos_y_norm = 1.0 - (final_props['position'][1] / (seq_h / 2.0))
+
+        # Convert pixel-based anchor point to normalized centered coordinates for rendering
+        anchor_x_norm = (final_props['anchor_point'][0] / (frame_img.width / 2.0)) - 1.0
+        anchor_y_norm = (final_props['anchor_point'][1] / (frame_img.height / 2.0)) - 1.0
+        # --- END NEW BLOCK ---
+
+        # 3. Apply transformations using Pillow
         new_size = (
             int(frame_img.width * final_props['scale']),
             int(frame_img.height * final_props['scale'])
         )
         frame_img = frame_img.resize(new_size, Image.Resampling.LANCZOS)
-        frame_img = frame_img.rotate(-final_props['rotation'], expand=True, resample=Image.BICUBIC)
+        frame_img = frame_img.rotate(final_props['rotation'], expand=True, resample=Image.BICUBIC)
 
-        seq_w, seq_h = state.get_sequence_properties()[1:]
         canvas = Image.new("RGBA", (seq_w, seq_h), (0, 0, 0, 255))
 
-        paste_x = int((seq_w / 2) * (1 + final_props['position'][0]) - (frame_img.width / 2) + (final_props['anchor_point'][0] * frame_img.width))
-        paste_y = int((seq_h / 2) * (1 - final_props['position'][1]) - (frame_img.height / 2) - (final_props['anchor_point'][1] * frame_img.height))
+        # This calculation remains the same, but now uses our converted normalized values
+        paste_x = int((seq_w / 2) * (1 + pos_x_norm) - (frame_img.width / 2) - (anchor_x_norm * (frame_img.width / 2)))
+        paste_y = int((seq_h / 2) * (1 - pos_y_norm) - (frame_img.height / 2) - (anchor_y_norm * (frame_img.height / 2)))
 
-        if final_props['opacity'] < 1.0:
+        if opacity_norm < 1.0:
             alpha = frame_img.getchannel('A') if frame_img.mode == 'RGBA' else Image.new('L', frame_img.size, 255)
-            alpha = alpha.point(lambda i: i * final_props['opacity'])
+            alpha = alpha.point(lambda i: i * opacity_norm)
             frame_img.putalpha(alpha)
         
         canvas.paste(frame_img, (paste_x, paste_y), frame_img if frame_img.mode == 'RGBA' else None)
