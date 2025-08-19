@@ -30,9 +30,9 @@ logging.basicConfig(
     format="%(message)s",
     datefmt="[%X]",
     handlers=[RichHandler(
-        rich_tracebacks=True, 
-        markup=True, 
-        show_path=False, 
+        rich_tracebacks=True,
+        markup=True,
+        show_path=False,
         show_time=False,
         show_level=False
     )]
@@ -80,18 +80,24 @@ def run_cli():
                 break
 
             try:
-                # --- MODIFICATION 1: Call run_to_completion instead of step ---
-                # This will now run the agent in a loop until it calls finish_job
+                # Call run_to_completion, which will run the agent in a loop until it calls finish_job
                 agent.run_to_completion(prompt)
 
             except JobFinishedException as e:
-                # --- MODIFICATION 2: Handle the exception as the end of a SINGLE JOB ---
+                # Handle the exception as the end of a SINGLE JOB.
                 # Instead of breaking the loop, we print the result and continue,
                 # allowing for the next prompt.
                 console.print("\n[bold green]JOB FINISHED[/bold green]")
                 console.print(f"Final Message: {e.result.get('message')}")
-                if e.result.get('output_path'):
-                    console.print(f"Output Path: {e.result.get('output_path')}")
+                
+                # --- MODIFICATION: Handle a list of output paths (attachments) ---
+                output_paths = e.result.get('output_paths')
+                if output_paths:
+                    console.print("Attachments:")
+                    for path in output_paths:
+                        console.print(f"  - {path}")
+                # --- END MODIFICATION ---
+
                 console.print("-" * 50)
                 # The loop continues, waiting for the next prompt...
 
