@@ -38,7 +38,7 @@ class GetAssetInfoTool(BaseTool):
     def args_schema(self) -> type[BaseModel]:
         return GetAssetInfoArgs
 
-    def execute(self, state: 'State', args: GetAssetInfoArgs, client: openai.OpenAI) -> str:
+    def execute(self, state: 'State', args: GetAssetInfoArgs, client: openai.OpenAI, tmpdir: str) -> str:
         """
         Probes each requested file using the centralized utility to extract and format its metadata.
         """

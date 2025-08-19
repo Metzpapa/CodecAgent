@@ -43,7 +43,7 @@ class DeleteClipTool(BaseTool):
     def args_schema(self):
         return DeleteClipsArgs
 
-    def execute(self, state: 'State', args: DeleteClipsArgs, client: openai.OpenAI) -> str:
+    def execute(self, state: 'State', args: DeleteClipsArgs, client: openai.OpenAI, tmpdir: str) -> str:
         # --- 1. Input Validation ---
         if args.ripple and len(args.clip_ids) > 1:
             return "Error: Ripple delete is not supported when deleting multiple clips at once. Please provide only one clip_id when ripple is True."

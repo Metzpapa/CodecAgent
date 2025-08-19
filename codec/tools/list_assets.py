@@ -25,7 +25,7 @@ class ListAssetsTool(BaseTool):
     @property
     def args_schema(self):
         return NoOpArgs
-    def execute(self, state: 'State', args: NoOpArgs, client: openai.OpenAI) -> str:
+    def execute(self, state: 'State', args: NoOpArgs, client: openai.OpenAI, tmpdir: str) -> str:
         """
         Scans the assets directory and all its subdirectories, returning a
         list of all found files, ignoring hidden system files.

@@ -235,7 +235,7 @@ class AddClipsTool(BaseTool):
 
         return validated_group, None
 
-    def execute(self, state: 'State', args: AddClipsArgs, client: openai.OpenAI) -> str:
+    def execute(self, state: 'State', args: AddClipsArgs, client: openai.OpenAI, tmpdir: str) -> str:
         # --- PHASE 1: VALIDATION (ALL OR NOTHING) ---
         all_validated_groups: List[List[_ValidatedClipInfo]] = []
         errors = []

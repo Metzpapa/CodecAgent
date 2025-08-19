@@ -57,21 +57,19 @@ class VisualizeTimelineTool(BaseTool):
     def args_schema(self):
         return VisualizeTimelineArgs
 
-    def execute(self, state: 'State', args: VisualizeTimelineArgs, client: openai.OpenAI) -> str:
+    def execute(self, state: 'State', args: VisualizeTimelineArgs, client: openai.OpenAI, tmpdir: str) -> str:
         if not state.timeline:
             return "Error: The timeline is empty. Cannot visualize an empty timeline."
 
-        tmp_file_path = None
         try:
             visualizer = _TimelineVisualizer(state, args)
-            final_image = visualizer.render()
+            final_image = visualizer.render(tmpdir)
 
             if not final_image:
                 return "Error: Failed to generate timeline visualization. This may be due to an internal error."
 
-            with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tmp_file:
-                final_image.save(tmp_file, format="JPEG", quality=85)
-                tmp_file_path = tmp_file.name
+            tmp_file_path = os.path.join(tmpdir, "timeline_visualization.jpg")
+            final_image.save(tmp_file_path, format="JPEG", quality=85)
 
             logging.info(f"Uploading timeline visualization from '{tmp_file_path}'...")
             with open(tmp_file_path, "rb") as f:
@@ -88,11 +86,6 @@ class VisualizeTimelineTool(BaseTool):
             import traceback
             traceback.print_exc()
             return f"An unexpected error occurred while generating the timeline visualization: {e}"
-        
-        finally:
-            if tmp_file_path and os.path.exists(tmp_file_path):
-                logging.info(f"Cleaning up temporary visualization file: {tmp_file_path}")
-                os.unlink(tmp_file_path)
 
 
 class _TimelineVisualizer:
@@ -136,12 +129,11 @@ class _TimelineVisualizer:
         logging.warning(f"Arial font not found. Using default font for size {size}.")
         return ImageFont.load_default(size)
 
-    def render(self) -> Optional[Image.Image]:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            self._prepare_view_window()
-            self._collect_and_prepare_clips()
-            self._extract_thumbnails(tmpdir)
-            return self._draw_image()
+    def render(self, tmpdir: str) -> Optional[Image.Image]:
+        self._prepare_view_window()
+        self._collect_and_prepare_clips()
+        self._extract_thumbnails(tmpdir)
+        return self._draw_image()
 
     def _prepare_view_window(self):
         self.view_start_sec = hms_to_seconds(self.args.start_time) if self.args.start_time else 0.0

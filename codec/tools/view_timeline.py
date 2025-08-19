@@ -62,7 +62,7 @@ class ViewTimelineTool(BaseTool):
     def args_schema(self):
         return ViewTimelineArgs
 
-    def execute(self, state: 'State', args: ViewTimelineArgs, client: openai.OpenAI) -> str:
+    def execute(self, state: 'State', args: ViewTimelineArgs, client: openai.OpenAI, tmpdir: str) -> str:
         if not state.timeline:
             return "Error: The timeline is empty. Cannot view an empty timeline."
 
@@ -117,71 +117,70 @@ class ViewTimelineTool(BaseTool):
                 frames_by_source[clip.source_path].append(event)
 
         # --- 4. Batch Extraction per Source & Parallel Upload ---
-        with tempfile.TemporaryDirectory() as tmpdir:
-            logging.info(f"Starting batch extraction for {len(frames_by_source)} source files...")
+        logging.info(f"Starting batch extraction for {len(frames_by_source)} source files...")
+        
+        upload_results = {} # Maps timeline_ts -> result (Tuple or error string)
+        with ThreadPoolExecutor(max_workers=16) as executor:
+            future_to_ts = {}
+            for source_path, tasks in frames_by_source.items():
+                try:
+                    frame_numbers = sorted(list(set([t['frame_num'] for t in tasks])))
+                    select_filter = "+".join([f"eq(n,{fn})" for fn in frame_numbers])
+                    output_pattern = os.path.join(tmpdir, f"{Path(source_path).stem}_frame_%04d.jpg")
+                    
+                    proc = ffmpeg.input(source_path).filter('select', select_filter).output(output_pattern, vsync='vfr', start_number=0).run_async(pipe_stdout=True, pipe_stderr=True)
+                    proc.communicate()
+
+                    extracted_files = sorted(Path(tmpdir).glob(f"{Path(source_path).stem}_frame_*.jpg"))
+                    
+                    tasks_sorted_by_frame = sorted(tasks, key=lambda t: t['frame_num'])
+                    for i, task in enumerate(tasks_sorted_by_frame):
+                        if i < len(extracted_files):
+                            display_name = f"timeline-frame-{task['clip'].clip_id}-{task['timeline_ts']:.2f}s"
+                            future = executor.submit(self._upload_file_from_path, extracted_files[i], display_name, client)
+                            future_to_ts[future] = task['timeline_ts']
+
+                except Exception as e:
+                    for task in tasks:
+                        upload_results[task['timeline_ts']] = f"Failed to extract frames from {os.path.basename(source_path)}: {e}"
+
+            for future in as_completed(future_to_ts):
+                ts = future_to_ts[future]
+                try:
+                    upload_results[ts] = future.result()
+                except Exception as e:
+                    upload_results[ts] = f"Upload failed: {e}"
+
+        # --- 5. Process results and update state ---
+        successful_frames = 0
+        for event in sorted(timeline_events, key=lambda x: x['timeline_ts']):
+            ts = event['timeline_ts']
+            clip = event.get('clip')
+
+            if not clip:
+                logging.info(f"Timeline at {ts:.3f}s: [GAP ON VIDEO TRACKS]")
+                continue
+
+            result = upload_results.get(ts)
+            track_name = f"V{clip.track_number}"
             
-            upload_results = {} # Maps timeline_ts -> result (Tuple or error string)
-            with ThreadPoolExecutor(max_workers=16) as executor:
-                future_to_ts = {}
-                for source_path, tasks in frames_by_source.items():
-                    try:
-                        frame_numbers = sorted(list(set([t['frame_num'] for t in tasks])))
-                        select_filter = "+".join([f"eq(n,{fn})" for fn in frame_numbers])
-                        output_pattern = os.path.join(tmpdir, f"{Path(source_path).stem}_frame_%04d.jpg")
-                        
-                        proc = ffmpeg.input(source_path).filter('select', select_filter).output(output_pattern, vsync='vfr', start_number=0).run_async(pipe_stdout=True, pipe_stderr=True)
-                        proc.communicate()
-
-                        extracted_files = sorted(Path(tmpdir).glob(f"{Path(source_path).stem}_frame_*.jpg"))
-                        
-                        tasks_sorted_by_frame = sorted(tasks, key=lambda t: t['frame_num'])
-                        for i, task in enumerate(tasks_sorted_by_frame):
-                            if i < len(extracted_files):
-                                display_name = f"timeline-frame-{task['clip'].clip_id}-{task['timeline_ts']:.2f}s"
-                                future = executor.submit(self._upload_file_from_path, extracted_files[i], display_name, client)
-                                future_to_ts[future] = task['timeline_ts']
-
-                    except Exception as e:
-                        for task in tasks:
-                            upload_results[task['timeline_ts']] = f"Failed to extract frames from {os.path.basename(source_path)}: {e}"
-
-                for future in as_completed(future_to_ts):
-                    ts = future_to_ts[future]
-                    try:
-                        upload_results[ts] = future.result()
-                    except Exception as e:
-                        upload_results[ts] = f"Upload failed: {e}"
-
-            # --- 5. Process results and update state ---
-            successful_frames = 0
-            for event in sorted(timeline_events, key=lambda x: x['timeline_ts']):
-                ts = event['timeline_ts']
-                clip = event.get('clip')
-
-                if not clip:
-                    logging.info(f"Timeline at {ts:.3f}s: [GAP ON VIDEO TRACKS]")
-                    continue
-
-                result = upload_results.get(ts)
-                track_name = f"V{clip.track_number}"
-                
-                if result and not isinstance(result, str):
-                    file_id, local_path = result
-                    state.uploaded_files.append(file_id)
-                    state.new_multimodal_files.append((file_id, local_path))
-                    successful_frames += 1
-                    logging.info(f"Timeline at {ts:.3f}s (from clip: '{clip.clip_id}' on track {track_name})")
-                else:
-                    error_details = result or "Processing failed."
-                    logging.warning(f"  - Failed to process frame from clip '{clip.clip_id}' at timeline {ts:.3f}s: {error_details}")
-            
-            if successful_frames == 0:
-                return f"Error: Failed to extract any frames from the timeline between {start_sec:.2f}s and {end_sec:.2f}s."
-            
-            return (
-                f"Successfully extracted and uploaded {successful_frames} frames sampled between {start_sec:.2f}s and {end_sec:.2f}s "
-                f"of the timeline. The agent can now view them."
-            )
+            if result and not isinstance(result, str):
+                file_id, local_path = result
+                state.uploaded_files.append(file_id)
+                state.new_multimodal_files.append((file_id, local_path))
+                successful_frames += 1
+                logging.info(f"Timeline at {ts:.3f}s (from clip: '{clip.clip_id}' on track {track_name})")
+            else:
+                error_details = result or "Processing failed."
+                logging.warning(f"  - Failed to process frame from clip '{clip.clip_id}' at timeline {ts:.3f}s: {error_details}")
+        
+        if successful_frames == 0:
+            return f"Error: Failed to extract any frames from the timeline between {start_sec:.2f}s and {end_sec:.2f}s."
+        
+        return (
+            f"Successfully extracted and uploaded {successful_frames} frames sampled between {start_sec:.2f}s and {end_sec:.2f}s "
+            f"of the timeline. The agent can now view them."
+        )
 
     def _upload_file_from_path(self, file_path: Path, display_name: str, client: openai.OpenAI) -> Tuple[str, str]:
         """Helper to upload a single file, intended for use in the executor."""

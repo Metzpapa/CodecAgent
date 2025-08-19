@@ -51,7 +51,7 @@ class GetTimelineSummaryTool(BaseTool):
     def args_schema(self):
         return GetTimelineSummaryArgs
 
-    def execute(self, state: 'State', args: GetTimelineSummaryArgs, client: openai.OpenAI) -> str:
+    def execute(self, state: 'State', args: GetTimelineSummaryArgs, client: openai.OpenAI, tmpdir: str) -> str:
         if not state.timeline:
             return "Timeline is currently empty."
 

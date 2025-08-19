@@ -72,7 +72,7 @@ class TransformTool(BaseTool):
     def args_schema(self):
         return TransformArgs
 
-    def execute(self, state: 'State', args: TransformArgs, client: openai.OpenAI) -> str:
+    def execute(self, state: 'State', args: TransformArgs, client: openai.OpenAI, tmpdir: str) -> str:
         # --- PHASE 1: VALIDATE AND APPLY KEYFRAMES TO STATE ---
         modified_clips = set()
         errors = []
@@ -114,17 +114,16 @@ class TransformTool(BaseTool):
 
         # --- PHASE 2: GENERATE AND UPLOAD VISUAL PREVIEWS ---
         preview_count = 0
-        with tempfile.TemporaryDirectory() as tmpdir:
-            for transform_info in applied_transformations:
-                try:
-                    file_id, local_path = self._generate_and_upload_preview_frame(
-                        state, client, transform_info['clip'], transform_info['timeline_sec'], tmpdir
-                    )
-                    state.new_multimodal_files.append((file_id, local_path))
-                    state.uploaded_files.append(file_id)
-                    preview_count += 1
-                except Exception as e:
-                    logging.error(f"Failed to generate preview for clip '{transform_info['clip'].clip_id}': {e}", exc_info=True)
+        for transform_info in applied_transformations:
+            try:
+                file_id, local_path = self._generate_and_upload_preview_frame(
+                    state, client, transform_info['clip'], transform_info['timeline_sec'], tmpdir
+                )
+                state.new_multimodal_files.append((file_id, local_path))
+                state.uploaded_files.append(file_id)
+                preview_count += 1
+            except Exception as e:
+                logging.error(f"Failed to generate preview for clip '{transform_info['clip'].clip_id}': {e}", exc_info=True)
 
         # --- PHASE 3: FORMULATE FINAL RESPONSE ---
         confirmation = (

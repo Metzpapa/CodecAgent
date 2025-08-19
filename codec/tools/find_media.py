@@ -89,14 +89,14 @@ class FindMediaTool(BaseTool):
     def args_schema(self):
         return FindMediaArgs
 
-    def execute(self, state: 'State', args: FindMediaArgs, client: openai.OpenAI) -> str:
+    def execute(self, state: 'State', args: FindMediaArgs, client: openai.OpenAI, tmpdir: str) -> str:
         try:
             if args.mode == "download":
                 return self._execute_download(state, args)
             elif args.mode == "search_only":
                 return self._execute_search_only(args)
             elif args.mode == "preview":
-                return self._execute_preview(args, client, state)
+                return self._execute_preview(args, client, state, tmpdir)
             else:
                 return f"Error: Unknown mode '{args.mode}'."
         except Exception as e:
@@ -199,7 +199,7 @@ class FindMediaTool(BaseTool):
         
         return json.dumps(search_results, indent=2)
 
-    def _execute_preview(self, args: FindMediaArgs, client: openai.OpenAI, state: 'State') -> str:
+    def _execute_preview(self, args: FindMediaArgs, client: openai.OpenAI, state: 'State', tmpdir: str) -> str:
         logging.info(f"Generating preview for query: '{args.query}'")
         
         ydl_opts = {
@@ -238,18 +238,17 @@ class FindMediaTool(BaseTool):
             })
 
         uploaded_frames: Dict[str, Any] = {}
-        with tempfile.TemporaryDirectory() as tmpdir:
-            with ThreadPoolExecutor(max_workers=8) as executor:
-                future_to_job = {
-                    executor.submit(self._extract_and_upload_frame_from_url, job, client, tmpdir): job
-                    for job in frame_jobs
-                }
-                for future in as_completed(future_to_job):
-                    job = future_to_job[future]
-                    try:
-                        uploaded_frames[job['id']] = future.result()
-                    except Exception as e:
-                        uploaded_frames[job['id']] = f"System error during frame processing: {e}"
+        with ThreadPoolExecutor(max_workers=8) as executor:
+            future_to_job = {
+                executor.submit(self._extract_and_upload_frame_from_url, job, client, tmpdir): job
+                for job in frame_jobs
+            }
+            for future in as_completed(future_to_job):
+                job = future_to_job[future]
+                try:
+                    uploaded_frames[job['id']] = future.result()
+                except Exception as e:
+                    uploaded_frames[job['id']] = f"System error during frame processing: {e}"
 
         successful_frames = 0
         for i, result_data in enumerate(results_with_jobs):

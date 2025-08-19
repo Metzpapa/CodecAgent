@@ -73,7 +73,7 @@ class FinishJobTool(BaseTool):
     def args_schema(self):
         return FinishJobArgs
 
-    def execute(self, state: 'State', args: FinishJobArgs, client: openai.OpenAI) -> str:
+    def execute(self, state: 'State', args: FinishJobArgs, client: openai.OpenAI, tmpdir: str) -> str:
         output_path = None
         export_error = None
 

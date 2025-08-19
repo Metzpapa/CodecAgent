@@ -52,7 +52,7 @@ class SplitClipTool(BaseTool):
 
     # REMOVED: The local _hms_to_seconds method is no longer needed.
 
-    def execute(self, state: 'State', args: SplitClipArgs, client: openai.OpenAI) -> str:
+    def execute(self, state: 'State', args: SplitClipArgs, client: openai.OpenAI, tmpdir: str) -> str:
         # --- 1. Find the target clip and convert time ---
         original_clip = state.find_clip_by_id(args.clip_id)
         if not original_clip:

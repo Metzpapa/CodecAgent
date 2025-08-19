@@ -73,7 +73,7 @@ class TranscribeMediaTool(BaseTool):
     def args_schema(self):
         return TranscribeMediaArgs
 
-    def execute(self, state: 'State', args: TranscribeMediaArgs, client: openai.OpenAI) -> str:
+    def execute(self, state: 'State', args: TranscribeMediaArgs, client: openai.OpenAI, tmpdir: str) -> str:
         try:
             if args.source_filename:
                 return self._transcribe_asset(state, args, client)

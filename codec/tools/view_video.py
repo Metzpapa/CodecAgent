@@ -101,7 +101,7 @@ class ViewVideoTool(BaseTool):
         return ViewVideoArgs
 
     # --- MODIFIED: The execute method signature and return type are updated ---
-    def execute(self, state: 'State', args: ViewVideoArgs, client: openai.OpenAI) -> str:
+    def execute(self, state: 'State', args: ViewVideoArgs, client: openai.OpenAI, tmpdir: str) -> str:
         # --- 1. Validation & Setup (No changes needed here) ---
         full_path = os.path.join(state.assets_directory, args.source_filename)
         if not os.path.exists(full_path):
@@ -143,51 +143,50 @@ class ViewVideoTool(BaseTool):
             ]
         
         # --- 3. Parallel Extraction & Upload ---
-        with tempfile.TemporaryDirectory() as tmpdir:
-            logging.info(f"Starting parallel extraction and upload of {len(timestamps)} frames from '{args.source_filename}'...")
-            
-            upload_results = []
-            with ThreadPoolExecutor(max_workers=16) as executor:
-                future_to_ts = {
-                    executor.submit(
-                        _extract_and_upload_frame,
-                        full_path,
-                        ts,
-                        f"frame-{args.source_filename}-{ts:.2f}s",
-                        client,
-                        tmpdir
-                    ): ts
-                    for ts in timestamps
-                }
+        logging.info(f"Starting parallel extraction and upload of {len(timestamps)} frames from '{args.source_filename}'...")
+        
+        upload_results = []
+        with ThreadPoolExecutor(max_workers=16) as executor:
+            future_to_ts = {
+                executor.submit(
+                    _extract_and_upload_frame,
+                    full_path,
+                    ts,
+                    f"frame-{args.source_filename}-{ts:.2f}s",
+                    client,
+                    tmpdir
+                ): ts
+                for ts in timestamps
+            }
 
-                for future in as_completed(future_to_ts):
-                    ts = future_to_ts[future]
-                    try:
-                        result = future.result()
-                        upload_results.append((ts, result))
-                    except Exception as e:
-                        upload_results.append((ts, f"An unexpected system error during upload: {e}"))
+            for future in as_completed(future_to_ts):
+                ts = future_to_ts[future]
+                try:
+                    result = future.result()
+                    upload_results.append((ts, result))
+                except Exception as e:
+                    upload_results.append((ts, f"An unexpected system error during upload: {e}"))
 
-            # --- 4. Process results and update state ---
-            upload_results.sort(key=lambda x: x[0])
-            
-            successful_uploads = 0
-            for ts, result_or_error in upload_results:
-                if isinstance(result_or_error, tuple):
-                    file_id, local_path = result_or_error
-                    # Add to state for cleanup
-                    state.uploaded_files.append(file_id)
-                    # Add to state for the agent to use in the next API call
-                    state.new_multimodal_files.append((file_id, local_path))
-                    successful_uploads += 1
-                else:
-                    logging.warning(f"  - Failed to process frame at {ts:.3f}s: {result_or_error}")
+        # --- 4. Process results and update state ---
+        upload_results.sort(key=lambda x: x[0])
+        
+        successful_uploads = 0
+        for ts, result_or_error in upload_results:
+            if isinstance(result_or_error, tuple):
+                file_id, local_path = result_or_error
+                # Add to state for cleanup
+                state.uploaded_files.append(file_id)
+                # Add to state for the agent to use in the next API call
+                state.new_multimodal_files.append((file_id, local_path))
+                successful_uploads += 1
+            else:
+                logging.warning(f"  - Failed to process frame at {ts:.3f}s: {result_or_error}")
 
-            if successful_uploads == 0:
-                return f"Error: Failed to extract or upload any frames from '{args.source_filename}'."
+        if successful_uploads == 0:
+            return f"Error: Failed to extract or upload any frames from '{args.source_filename}'."
 
-            # Return a simple confirmation string. The agent will handle the multimodal part.
-            return (
-                f"Successfully extracted and uploaded {successful_uploads} frames from '{args.source_filename}' "
-                f"between {start_sec:.2f}s and {end_sec:.2f}s. The agent can now view them."
-            )
+        # Return a simple confirmation string. The agent will handle the multimodal part.
+        return (
+            f"Successfully extracted and uploaded {successful_uploads} frames from '{args.source_filename}' "
+            f"between {start_sec:.2f}s and {end_sec:.2f}s. The agent can now view them."
+        )
