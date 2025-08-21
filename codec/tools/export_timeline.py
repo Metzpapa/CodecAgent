@@ -33,11 +33,6 @@ class ExportTimelineArgs(BaseModel):
 
 
 class ExportTimelineTool(BaseTool):
-    """
-    Exports the current timeline structure into an editable project file (.otio or .xml).
-    It can also consolidate all used media into a self-contained project folder.
-    This tool produces a deliverable file in the output directory.
-    """
 
     @property
     def name(self) -> str:

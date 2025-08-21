@@ -15,7 +15,6 @@ if TYPE_CHECKING:
 
 
 class ClipToAdd(BaseModel):
-    """A Pydantic model representing a single logical clip to be added to the timeline."""
     clip_id: str = Field(
         ...,
         description="A unique name for the new clip (e.g., 'intro_scene', 'b-roll_1'). If adding both video and audio, this ID will be used as a base for both (e.g., 'intro_scene_v', 'intro_scene_a')."

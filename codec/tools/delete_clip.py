@@ -13,7 +13,6 @@ if TYPE_CHECKING:
 
 
 class DeleteClipsArgs(BaseModel):
-    """Arguments for the delete_clips tool."""
     clip_ids: List[str] = Field(
         ...,
         description="A list of one or more unique clip identifiers to be deleted. These IDs must exactly match `clip_id`s from the `get_timeline_summary` tool."
@@ -25,8 +24,6 @@ class DeleteClipsArgs(BaseModel):
 
 
 class DeleteClipTool(BaseTool):
-    """A tool to delete one or more clips from the timeline."""
-
     @property
     def name(self) -> str:
         return "delete_clips"
