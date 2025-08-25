@@ -1,21 +1,17 @@
-# codec/tools/view_timeline.py
-
+# codecagent/codec/tools/view_timeline.py
 import os
-import ffmpeg
-from typing import Optional, TYPE_CHECKING, Tuple
-import openai
 import logging
+from typing import Optional, TYPE_CHECKING, Tuple
 from concurrent.futures import ThreadPoolExecutor, as_completed
-import tempfile
 from pathlib import Path
-from collections import defaultdict
 
+import openai
 from pydantic import BaseModel, Field
 
 from .base import BaseTool
 from ..utils import hms_to_seconds
+from .. import rendering  # <-- IMPORT THE NEW UNIFIED RENDERING MODULE
 
-# Use a forward reference for the State class to avoid circular imports.
 if TYPE_CHECKING:
     from ..state import State
 
@@ -41,8 +37,8 @@ class ViewTimelineArgs(BaseModel):
 
 class ViewTimelineTool(BaseTool):
     """
-    A tool to extract and 'see' a specified number of evenly-spaced frames
-    from the rendered timeline within a given time range.
+    A tool to extract and 'see' a specified number of evenly-spaced, fully composited
+    frames from the timeline within a given time range.
     """
 
     @property
@@ -52,10 +48,9 @@ class ViewTimelineTool(BaseTool):
     @property
     def description(self) -> str:
         return (
-            "Extracts and displays a specified number of frames from the *rendered timeline* to 'see' the current edit. "
-            "This correctly handles video layers (e.g., V2 is shown on top of V1). "
-            "Use this to get a visual overview, find specific scenes, or confirm the edit. The output will show which source clip each frame comes from. "
-            "To view a single source file, use 'view_video'."
+            "Extracts and displays a specified number of fully rendered frames from the timeline to 'see' the current edit. "
+            "This correctly handles all video layers, transformations, and opacity (e.g., V2 is shown on top of V1). "
+            "Use this to get an accurate visual overview of the current state of the video."
         )
 
     @property
@@ -63,10 +58,10 @@ class ViewTimelineTool(BaseTool):
         return ViewTimelineArgs
 
     def execute(self, state: 'State', args: ViewTimelineArgs, client: openai.OpenAI, tmpdir: str) -> str:
-        if not state.timeline:
-            return "Error: The timeline is empty. Cannot view an empty timeline."
+        if not any(c.track_type == 'video' for c in state.timeline):
+            return "Error: The timeline contains no video clips. Cannot view the timeline."
 
-        # --- 1. Determine Time Range & Calculate Sample Timestamps ---
+        # --- 1. Determine Time Range & Calculate Sample Timestamps (Largely Unchanged) ---
         start_sec = hms_to_seconds(args.start_time) if args.start_time else 0.0
         end_sec = hms_to_seconds(args.end_time) if args.end_time else state.get_timeline_duration()
 
@@ -81,112 +76,66 @@ class ViewTimelineTool(BaseTool):
             segment_duration = duration_to_sample / args.num_frames
             timeline_timestamps = [start_sec + (i * segment_duration) + (segment_duration / 2) for i in range(args.num_frames)]
 
-        # --- 2. Map Timeline Timestamps to the Topmost Visible Source Frame ---
-        timeline_events = []
-        for ts in timeline_timestamps:
-            # Find all active video clips at this timestamp
-            active_video_clips = [
-                clip for clip in state.timeline
-                if clip.track_type == 'video' and
-                   clip.timeline_start_sec <= ts < (clip.timeline_start_sec + clip.duration_sec)
-            ]
-
-            if not active_video_clips:
-                timeline_events.append({'timeline_ts': ts, 'clip': None})
-                continue
-
-            # The topmost clip is the one with the highest track number
-            topmost_clip = max(active_video_clips, key=lambda c: c.track_number)
-            
-            source_time_offset = ts - topmost_clip.timeline_start_sec
-            source_ts = topmost_clip.source_in_sec + source_time_offset
-            
-            timeline_events.append({
-                'timeline_ts': ts,
-                'clip': topmost_clip,
-                'source_ts': source_ts
-            })
-
-        # --- 3. Group by Source File for Batch Extraction ---
-        frames_by_source = defaultdict(list)
-        for event in timeline_events:
-            if event['clip']:
-                clip = event['clip']
-                frame_number = int(round(event['source_ts'] * clip.source_frame_rate))
-                event['frame_num'] = frame_number # Store for later
-                frames_by_source[clip.source_path].append(event)
-
-        # --- 4. Batch Extraction per Source & Parallel Upload ---
-        logging.info(f"Starting batch extraction for {len(frames_by_source)} source files...")
+        # --- 2. Render and Upload Frames in Parallel (Completely Refactored) ---
+        # Instead of complex batching, we now submit a simple render-and-upload
+        # task for each timestamp to a thread pool.
         
-        upload_results = {} # Maps timeline_ts -> result (Tuple or error string)
-        with ThreadPoolExecutor(max_workers=16) as executor:
-            future_to_ts = {}
-            for source_path, tasks in frames_by_source.items():
-                try:
-                    frame_numbers = sorted(list(set([t['frame_num'] for t in tasks])))
-                    select_filter = "+".join([f"eq(n,{fn})" for fn in frame_numbers])
-                    output_pattern = os.path.join(tmpdir, f"{Path(source_path).stem}_frame_%04d.jpg")
-                    
-                    proc = ffmpeg.input(source_path).filter('select', select_filter).output(output_pattern, vsync='vfr', start_number=0).run_async(pipe_stdout=True, pipe_stderr=True)
-                    proc.communicate()
-
-                    extracted_files = sorted(Path(tmpdir).glob(f"{Path(source_path).stem}_frame_*.jpg"))
-                    
-                    tasks_sorted_by_frame = sorted(tasks, key=lambda t: t['frame_num'])
-                    for i, task in enumerate(tasks_sorted_by_frame):
-                        if i < len(extracted_files):
-                            display_name = f"timeline-frame-{task['clip'].clip_id}-{task['timeline_ts']:.2f}s"
-                            future = executor.submit(self._upload_file_from_path, extracted_files[i], display_name, client)
-                            future_to_ts[future] = task['timeline_ts']
-
-                except Exception as e:
-                    for task in tasks:
-                        upload_results[task['timeline_ts']] = f"Failed to extract frames from {os.path.basename(source_path)}: {e}"
+        logging.info(f"Starting parallel render of {len(timeline_timestamps)} preview frames using MLT...")
+        
+        successful_frames = 0
+        with ThreadPoolExecutor(max_workers=os.cpu_count() or 4) as executor:
+            # Create a future for each frame rendering task
+            future_to_ts = {
+                executor.submit(self._render_and_upload_frame, state, ts, tmpdir, client): ts
+                for ts in timeline_timestamps
+            }
 
             for future in as_completed(future_to_ts):
                 ts = future_to_ts[future]
                 try:
-                    upload_results[ts] = future.result()
+                    # The future returns the (file_id, local_path) tuple on success
+                    file_id, local_path = future.result()
+                    state.uploaded_files.append(file_id)
+                    state.new_multimodal_files.append((file_id, local_path))
+                    successful_frames += 1
+                    logging.info(f"Successfully processed frame for timeline at {ts:.3f}s")
                 except Exception as e:
-                    upload_results[ts] = f"Upload failed: {e}"
-
-        # --- 5. Process results and update state ---
-        successful_frames = 0
-        for event in sorted(timeline_events, key=lambda x: x['timeline_ts']):
-            ts = event['timeline_ts']
-            clip = event.get('clip')
-
-            if not clip:
-                logging.info(f"Timeline at {ts:.3f}s: [GAP ON VIDEO TRACKS]")
-                continue
-
-            result = upload_results.get(ts)
-            track_name = f"V{clip.track_number}"
-            
-            if result and not isinstance(result, str):
-                file_id, local_path = result
-                state.uploaded_files.append(file_id)
-                state.new_multimodal_files.append((file_id, local_path))
-                successful_frames += 1
-                logging.info(f"Timeline at {ts:.3f}s (from clip: '{clip.clip_id}' on track {track_name})")
-            else:
-                error_details = result or "Processing failed."
-                logging.warning(f"  - Failed to process frame from clip '{clip.clip_id}' at timeline {ts:.3f}s: {error_details}")
+                    logging.warning(f"Failed to process frame for timeline at {ts:.3f}s: {e}")
         
         if successful_frames == 0:
             return f"Error: Failed to extract any frames from the timeline between {start_sec:.2f}s and {end_sec:.2f}s."
         
         return (
-            f"Successfully extracted and uploaded {successful_frames} frames sampled between {start_sec:.2f}s and {end_sec:.2f}s "
+            f"Successfully rendered and uploaded {successful_frames} frames sampled between {start_sec:.2f}s and {end_sec:.2f}s "
             f"of the timeline. The agent can now view them."
         )
 
-    def _upload_file_from_path(self, file_path: Path, display_name: str, client: openai.OpenAI) -> Tuple[str, str]:
-        """Helper to upload a single file, intended for use in the executor."""
+    def _render_and_upload_frame(
+        self, state: 'State', timeline_sec: float, tmpdir: str, client: openai.OpenAI
+    ) -> Tuple[str, str]:
+        """
+        A helper function to render a single frame using the unified rendering
+        engine and then upload it. Designed to be run in a ThreadPoolExecutor.
+        """
         try:
-            with open(file_path, "rb") as f:
+            # 1. Define a unique path for the output frame.
+            output_path = Path(tmpdir) / f"timeline_view_{timeline_sec:.3f}.jpg"
+
+            # 2. Call the centralized rendering function. This is where the magic happens.
+            # It renders the fully composited frame, including all layers and transforms.
+            rendering.render_preview_frame(
+                state=state,
+                timeline_sec=timeline_sec,
+                output_path=str(output_path),
+                tmpdir=tmpdir
+            )
+
+            # 3. Upload the resulting file to OpenAI.
+            with open(output_path, "rb") as f:
                 uploaded_file = client.files.create(file=f, purpose="vision")
-            return uploaded_file.id, str(file_path)
+            
+            return uploaded_file.id, str(output_path)
+        
         except Exception as e:
-            raise IOError(f"Failed to upload file. Details: {str(e)}") from e
+            # Wrap any exception to be caught by the main loop
+            raise RuntimeError(f"Render/upload failed for timestamp {timeline_sec:.3f}s. Details: {e}") from e

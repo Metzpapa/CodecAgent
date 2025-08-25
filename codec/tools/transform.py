@@ -1,24 +1,21 @@
-# codec/tools/transform.py
+# codecagent/codec/tools/transform.py
 
-import os
-import tempfile
 import logging
 from typing import List, Optional, Literal, TYPE_CHECKING, Tuple
 from pathlib import Path
 import openai
-import ffmpeg
 from pydantic import BaseModel, Field
-from PIL import Image, ImageDraw, ImageFont
 
 from .base import BaseTool
 from ..state import Keyframe, TimelineClip
 from ..utils import hms_to_seconds
+from .. import rendering  # <-- IMPORT THE NEW UNIFIED RENDERING MODULE
 
 if TYPE_CHECKING:
     from ..state import State
 
 
-# --- Pydantic Models for Tool Arguments ---
+# --- Pydantic Models for Tool Arguments (Unchanged) ---
 
 class TransformProperties(BaseModel):
     """A dictionary of properties to set for a keyframe."""
@@ -36,12 +33,10 @@ class TransformProperties(BaseModel):
         None,
         description="The rotation of the clip in degrees. Positive values rotate clockwise."
     )
-    # --- FIX: Make the opacity description unambiguous, standardizing on 0-100 ---
     opacity: Optional[float] = Field(
         None,
         description="The opacity of the clip as a percentage, from 0 (transparent) to 100 (opaque)."
     )
-    # --- END FIX ---
     anchor_point: Optional[List[float]] = Field(
         None,
         min_length=2,
@@ -94,7 +89,8 @@ class TransformTool(BaseTool):
         return TransformArgs
 
     def execute(self, state: 'State', args: TransformArgs, client: openai.OpenAI, tmpdir: str) -> str:
-        # --- PHASE 1: VALIDATE AND APPLY KEYFRAMES TO STATE ---
+        # --- PHASE 1: VALIDATE AND APPLY KEYFRAMES TO STATE (Unchanged) ---
+        # This is the core responsibility of the tool: modifying the state.
         modified_clips = set()
         errors = []
         applied_transformations = []
@@ -133,7 +129,8 @@ class TransformTool(BaseTool):
         if errors:
             return "Operation failed with errors:\n- " + "\n- ".join(errors)
 
-        # --- PHASE 2: GENERATE AND UPLOAD VISUAL PREVIEWS ---
+        # --- PHASE 2: GENERATE AND UPLOAD VISUAL PREVIEWS (Refactored) ---
+        # This now delegates the complex rendering work to the unified rendering module.
         preview_count = 0
         for transform_info in applied_transformations:
             try:
@@ -146,7 +143,7 @@ class TransformTool(BaseTool):
             except Exception as e:
                 logging.error(f"Failed to generate preview for clip '{transform_info['clip'].clip_id}': {e}", exc_info=True)
 
-        # --- PHASE 3: FORMULATE FINAL RESPONSE ---
+        # --- PHASE 3: FORMULATE FINAL RESPONSE (Unchanged) ---
         confirmation = (
             f"Successfully applied {len(args.transformations)} transformations to {len(modified_clips)} clips: "
             f"{', '.join(sorted(list(modified_clips)))}."
@@ -156,85 +153,28 @@ class TransformTool(BaseTool):
         
         return confirmation
 
-    # --- HELPER METHOD FOR VISUAL FEEDBACK ---
+    # --- HELPER METHOD FOR VISUAL FEEDBACK (COMPLETELY REWRITTEN) ---
     def _generate_and_upload_preview_frame(
         self, state: 'State', client: openai.OpenAI, clip: TimelineClip, timeline_sec: float, tmpdir: str
     ) -> Tuple[str, str]:
         """
-        Renders a single frame of a clip with its transformations applied at a specific timeline second.
+        Renders a single, fully composited frame of the timeline at a specific
+        second using the unified MLT rendering engine, then uploads it.
+        This guarantees the preview is 100% consistent with the final render.
         """
-        # 1. Determine source time and extract the raw frame
-        source_time_sec = clip.source_in_sec + (timeline_sec - clip.timeline_start_sec)
+        # 1. Define the output path for the rendered frame.
+        final_frame_path = Path(tmpdir) / f"preview_{clip.clip_id}_{timeline_sec:.3f}.jpg"
 
-        one_frame_duration = 1.0 / clip.source_frame_rate if clip.source_frame_rate > 0 else 0.04
-        max_source_time = clip.source_total_duration_sec - one_frame_duration
-        source_time_sec = max(0, min(source_time_sec, max_source_time))
-
-        raw_frame_path = Path(tmpdir) / f"raw_{clip.clip_id}_{timeline_sec:.3f}.jpg"
-
-        try:
-            (
-                ffmpeg.input(clip.source_path, ss=source_time_sec)
-                .output(str(raw_frame_path), vframes=1, format='image2', vcodec='mjpeg')
-                .run(capture_stdout=True, capture_stderr=True, overwrite_output=True)
-            )
-        except ffmpeg.Error as e:
-            raise IOError(f"FFmpeg failed to extract frame from '{clip.source_path}': {e.stderr.decode()}")
-
-        # 2. Calculate the effective transformation at this point in time
-        clip_relative_sec = timeline_sec - clip.timeline_start_sec
-        active_kfs = [kf for kf in clip.transformations if kf.time_sec <= clip_relative_sec + 0.001]
-        
-        frame_img = Image.open(raw_frame_path)
-        seq_w, seq_h = state.get_sequence_properties()[1:]
-        
-        # Set default properties based on sequence and clip dimensions
-        final_props = {
-            "scale": 1.0, "rotation": 0.0, "opacity": 100.0, # Default to 100% opaque
-            "position": (seq_w / 2, seq_h / 2),
-            "anchor_point": (frame_img.width / 2, frame_img.height / 2)
-        }
-        for kf in sorted(active_kfs, key=lambda k: k.time_sec):
-            final_props.update(kf.model_dump(exclude_none=True))
-
-        # --- NEW: Unambiguously handle opacity and convert pixel coordinates ---
-        # Unconditionally convert 0-100 scale to 0.0-1.0 for rendering
-        opacity_norm = final_props['opacity'] / 100.0
-        
-        # Convert pixel-based position to normalized centered coordinates for rendering
-        pos_x_norm = (final_props['position'][0] / (seq_w / 2.0)) - 1.0
-        pos_y_norm = 1.0 - (final_props['position'][1] / (seq_h / 2.0))
-
-        # Convert pixel-based anchor point to normalized centered coordinates for rendering
-        anchor_x_norm = (final_props['anchor_point'][0] / (frame_img.width / 2.0)) - 1.0
-        anchor_y_norm = (final_props['anchor_point'][1] / (frame_img.height / 2.0)) - 1.0
-        # --- END NEW BLOCK ---
-
-        # 3. Apply transformations using Pillow
-        new_size = (
-            int(frame_img.width * final_props['scale']),
-            int(frame_img.height * final_props['scale'])
+        # 2. Call the centralized rendering function. All complex logic for
+        # compositing, transformations, and keyframing is handled there.
+        rendering.render_preview_frame(
+            state=state,
+            timeline_sec=timeline_sec,
+            output_path=str(final_frame_path),
+            tmpdir=tmpdir
         )
-        frame_img = frame_img.resize(new_size, Image.Resampling.LANCZOS)
-        frame_img = frame_img.rotate(final_props['rotation'], expand=True, resample=Image.BICUBIC)
 
-        canvas = Image.new("RGBA", (seq_w, seq_h), (0, 0, 0, 255))
-
-        # This calculation remains the same, but now uses our converted normalized values
-        paste_x = int((seq_w / 2) * (1 + pos_x_norm) - (frame_img.width / 2) - (anchor_x_norm * (frame_img.width / 2)))
-        paste_y = int((seq_h / 2) * (1 - pos_y_norm) - (frame_img.height / 2) - (anchor_y_norm * (frame_img.height / 2)))
-
-        if opacity_norm < 1.0:
-            alpha = frame_img.getchannel('A') if frame_img.mode == 'RGBA' else Image.new('L', frame_img.size, 255)
-            alpha = alpha.point(lambda i: i * opacity_norm)
-            frame_img.putalpha(alpha)
-        
-        canvas.paste(frame_img, (paste_x, paste_y), frame_img if frame_img.mode == 'RGBA' else None)
-        
-        # 4. Save and Upload
-        final_frame_path = Path(tmpdir) / f"final_{clip.clip_id}_{timeline_sec:.3f}.jpg"
-        canvas.convert("RGB").save(final_frame_path, "JPEG", quality=90)
-
+        # 3. Upload the resulting frame for the agent to see.
         with open(final_frame_path, "rb") as f:
             uploaded_file = client.files.create(file=f, purpose="vision")
         
