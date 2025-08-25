@@ -119,7 +119,7 @@ class ViewTimelineTool(BaseTool):
         """
         try:
             # 1. Define a unique path for the output frame.
-            output_path = Path(tmpdir) / f"timeline_view_{timeline_sec:.3f}.jpg"
+            output_path = Path(tmpdir) / f"timeline_view_{timeline_sec:.3f}.png"
 
             # 2. Call the centralized rendering function. This is where the magic happens.
             # It renders the fully composited frame, including all layers and transforms.

@@ -76,12 +76,12 @@ def render_preview_frame(state: 'State', timeline_sec: float, output_path: str, 
 
     This function uses the exact same MLT XML generation logic as the final render,
     ensuring that the preview frame is a perfect representation of the final output.
-    It instructs `melt` to render only the single requested frame as a JPEG image.
+    It instructs `melt` to render only the single requested frame as a PNG image.
 
     Args:
         state: The current agent state containing the timeline.
         timeline_sec: The time in seconds on the main timeline to render.
-        output_path: The absolute path where the output JPEG image will be saved.
+        output_path: The absolute path where the output PNG image will be saved.
         tmpdir: A temporary directory for the MLT project file.
     """
     logging.info(f"Rendering preview frame at {timeline_sec:.2f}s using MLT...")
@@ -96,6 +96,9 @@ def render_preview_frame(state: 'State', timeline_sec: float, output_path: str, 
         frame_num = int(round(timeline_sec * fps))
 
         # The 'out' property for melt is inclusive. Setting in=out renders one frame.
+        # Use PNG for preview frames to avoid known instability with MJPEG on some
+        # platforms/MLT builds (segfaults and pixel format warnings). PNG is
+        # intra-frame, lossless, and reliable for single-frame output.
         command = [
             "melt",
             mlt_project_path,
@@ -103,7 +106,8 @@ def render_preview_frame(state: 'State', timeline_sec: float, output_path: str, 
             f"out={frame_num}",
             "-consumer",
             f"avformat:{output_path}",
-            "vcodec=mjpeg"
+            "vcodec=png",
+            "pix_fmt=rgb24"
         ]
 
         logging.info(f"Executing melt command: {' '.join(command)}")

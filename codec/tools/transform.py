@@ -163,7 +163,7 @@ class TransformTool(BaseTool):
         This guarantees the preview is 100% consistent with the final render.
         """
         # 1. Define the output path for the rendered frame.
-        final_frame_path = Path(tmpdir) / f"preview_{clip.clip_id}_{timeline_sec:.3f}.jpg"
+        final_frame_path = Path(tmpdir) / f"preview_{clip.clip_id}_{timeline_sec:.3f}.png"
 
         # 2. Call the centralized rendering function. All complex logic for
         # compositing, transformations, and keyframing is handled there.
