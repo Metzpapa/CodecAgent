@@ -1,15 +1,19 @@
-# codecagent/codec/tools/transform.py
+# codec/tools/transform.py
 
 import logging
+import ffmpeg
 from typing import List, Optional, Literal, TYPE_CHECKING, Tuple
 from pathlib import Path
 import openai
 from pydantic import BaseModel, Field
 
+# --- NEW: Import Pillow for image composition ---
+from PIL import Image, ImageDraw, ImageFont
+
 from .base import BaseTool
 from ..state import Keyframe, TimelineClip
 from ..utils import hms_to_seconds
-from .. import rendering  # <-- IMPORT THE NEW UNIFIED RENDERING MODULE
+from .. import rendering
 
 if TYPE_CHECKING:
     from ..state import State
@@ -90,7 +94,6 @@ class TransformTool(BaseTool):
 
     def execute(self, state: 'State', args: TransformArgs, client: openai.OpenAI, tmpdir: str) -> str:
         # --- PHASE 1: VALIDATE AND APPLY KEYFRAMES TO STATE (Unchanged) ---
-        # This is the core responsibility of the tool: modifying the state.
         modified_clips = set()
         errors = []
         applied_transformations = []
@@ -130,11 +133,10 @@ class TransformTool(BaseTool):
             return "Operation failed with errors:\n- " + "\n- ".join(errors)
 
         # --- PHASE 2: GENERATE AND UPLOAD VISUAL PREVIEWS (Refactored) ---
-        # This now delegates the complex rendering work to the unified rendering module.
         preview_count = 0
         for transform_info in applied_transformations:
             try:
-                file_id, local_path = self._generate_and_upload_preview_frame(
+                file_id, local_path = self._generate_and_upload_transform_preview(
                     state, client, transform_info['clip'], transform_info['timeline_sec'], tmpdir
                 )
                 state.new_multimodal_files.append((file_id, local_path))
@@ -143,39 +145,107 @@ class TransformTool(BaseTool):
             except Exception as e:
                 logging.error(f"Failed to generate preview for clip '{transform_info['clip'].clip_id}': {e}", exc_info=True)
 
-        # --- PHASE 3: FORMULATE FINAL RESPONSE (Unchanged) ---
+        # --- PHASE 3: FORMULATE FINAL RESPONSE (MODIFIED) ---
         confirmation = (
             f"Successfully applied {len(args.transformations)} transformations to {len(modified_clips)} clips: "
             f"{', '.join(sorted(list(modified_clips)))}."
         )
         if preview_count > 0:
-            confirmation += f" Generated {preview_count} preview frames for the agent to view."
+            confirmation += (
+                f" Generated {preview_count} side-by-side preview frames. "
+                "On the left is the 'Source Monitor' showing the original frame, and on the right is the 'Program Monitor' "
+                "showing the fully transformed and composited result."
+            )
         
         return confirmation
 
-    # --- HELPER METHOD FOR VISUAL FEEDBACK (COMPLETELY REWRITTEN) ---
-    def _generate_and_upload_preview_frame(
+    # --- HELPER METHOD FOR ORCHESTRATING PREVIEW GENERATION ---
+    def _generate_and_upload_transform_preview(
         self, state: 'State', client: openai.OpenAI, clip: TimelineClip, timeline_sec: float, tmpdir: str
     ) -> Tuple[str, str]:
         """
-        Renders a single, fully composited frame of the timeline at a specific
-        second using the unified MLT rendering engine, then uploads it.
-        This guarantees the preview is 100% consistent with the final render.
+        Orchestrates the creation of a side-by-side preview image and uploads it.
         """
-        # 1. Define the output path for the rendered frame.
-        final_frame_path = Path(tmpdir) / f"preview_{clip.clip_id}_{timeline_sec:.3f}.png"
+        # 1. Create the composite image using our new helper.
+        composite_image_path = self._create_side_by_side_preview(state, clip, timeline_sec, tmpdir)
 
-        # 2. Call the centralized rendering function. All complex logic for
-        # compositing, transformations, and keyframing is handled there.
+        # 2. Upload the resulting image for the agent to see.
+        with open(composite_image_path, "rb") as f:
+            uploaded_file = client.files.create(file=f, purpose="vision")
+        
+        return uploaded_file.id, str(composite_image_path)
+
+    # --- NEW: CORE LOGIC FOR CREATING THE SIDE-BY-SIDE PREVIEW IMAGE ---
+    def _create_side_by_side_preview(
+        self, state: 'State', clip: TimelineClip, timeline_sec: float, tmpdir: str
+    ) -> str:
+        """
+        Generates a side-by-side image comparing the source frame to the final
+        composited frame and returns the path to the final image.
+        """
+        tmp_path = Path(tmpdir)
+        
+        # --- 1. Generate "Program Monitor" (Right Side) ---
+        # This renders the full timeline at the specified moment, ensuring an exact preview.
+        program_frame_path = tmp_path / f"program_{clip.clip_id}_{timeline_sec:.3f}.png"
         rendering.render_preview_frame(
             state=state,
             timeline_sec=timeline_sec,
-            output_path=str(final_frame_path),
+            output_path=str(program_frame_path),
             tmpdir=tmpdir
         )
 
-        # 3. Upload the resulting frame for the agent to see.
-        with open(final_frame_path, "rb") as f:
-            uploaded_file = client.files.create(file=f, purpose="vision")
+        # --- 2. Generate "Source Monitor" (Left Side) ---
+        # Calculate the corresponding timestamp in the original source file.
+        keyframe_relative_sec = timeline_sec - clip.timeline_start_sec
+        source_timestamp_sec = clip.source_in_sec + keyframe_relative_sec
         
-        return uploaded_file.id, str(final_frame_path)
+        source_frame_path = tmp_path / f"source_{clip.clip_id}_{timeline_sec:.3f}.png"
+        try:
+            (
+                ffmpeg.input(clip.source_path, ss=source_timestamp_sec)
+                .output(str(source_frame_path), vframes=1, format='image2', vcodec='png')
+                .run(capture_stdout=True, capture_stderr=True, overwrite_output=True)
+            )
+        except ffmpeg.Error as e:
+            logging.error(f"FFmpeg failed to extract source frame: {e.stderr.decode()}")
+            raise
+
+        # --- 3. Stitch and Label the Images using Pillow ---
+        _, seq_width, seq_height = state.get_sequence_properties()
+        
+        with Image.open(source_frame_path) as src_img, Image.open(program_frame_path) as prog_img:
+            # Ensure both images are resized to the sequence dimensions for consistent layout
+            src_img = src_img.resize((seq_width, seq_height), Image.Resampling.LANCZOS)
+            prog_img = prog_img.resize((seq_width, seq_height), Image.Resampling.LANCZOS)
+
+            # Define layout constants
+            padding = 20
+            header_height = 50
+            font_size = 24
+            
+            total_width = (seq_width * 2) + (padding * 3)
+            total_height = seq_height + header_height + padding
+
+            # Create the final canvas
+            composite_img = Image.new('RGB', (total_width, total_height), 'black')
+            draw = ImageDraw.Draw(composite_img)
+            
+            try:
+                font = ImageFont.truetype("arial.ttf", font_size)
+            except IOError:
+                font = ImageFont.load_default()
+
+            # Paste the images
+            composite_img.paste(src_img, (padding, header_height))
+            composite_img.paste(prog_img, (seq_width + padding * 2, header_height))
+
+            # Add labels
+            draw.text((padding, padding), "Source Monitor", fill="white", font=font)
+            draw.text((seq_width + padding * 2, padding), "Program Monitor", fill="white", font=font)
+
+            # Save the final composite image
+            final_output_path = tmp_path / f"preview_{clip.clip_id}_{timeline_sec:.3f}_composite.png"
+            composite_img.save(final_output_path)
+
+        return str(final_output_path)
