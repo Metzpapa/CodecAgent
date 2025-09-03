@@ -14,7 +14,7 @@ from pydantic import BaseModel, Field
 import openai
 
 from .base import BaseTool
-from ..utils import hms_to_seconds, probe_media_file
+from ..utils import hms_to_seconds, probe_media_file, seconds_to_hms
 
 # --- MODIFIED: Update TYPE_CHECKING imports for the new interface ---
 if TYPE_CHECKING:
@@ -188,5 +188,5 @@ class ViewVideoTool(BaseTool):
         # Return a simple confirmation string. The agent will handle the multimodal part.
         return (
             f"Successfully extracted and uploaded {successful_uploads} frames from '{args.source_filename}' "
-            f"between {start_sec:.2f}s and {end_sec:.2f}s. The agent can now view them."
+            f"between {seconds_to_hms(start_sec)} and {seconds_to_hms(end_sec)}. The agent can now view them."
         )

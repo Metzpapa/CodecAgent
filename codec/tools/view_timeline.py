@@ -9,7 +9,7 @@ import openai
 from pydantic import BaseModel, Field
 
 from .base import BaseTool
-from ..utils import hms_to_seconds
+from ..utils import hms_to_seconds, seconds_to_hms
 from .. import rendering  # <-- IMPORT THE NEW UNIFIED RENDERING MODULE
 
 if TYPE_CHECKING:
@@ -106,7 +106,7 @@ class ViewTimelineTool(BaseTool):
             return f"Error: Failed to extract any frames from the timeline between {start_sec:.2f}s and {end_sec:.2f}s."
         
         return (
-            f"Successfully rendered and uploaded {successful_frames} frames sampled between {start_sec:.2f}s and {end_sec:.2f}s "
+            f"Successfully rendered and uploaded {successful_frames} frames sampled between {seconds_to_hms(start_sec)} and {seconds_to_hms(end_sec)} "
             f"of the timeline. The agent can now view them."
         )
 

@@ -30,6 +30,26 @@ def hms_to_seconds(time_str: str) -> float:
     ms = int(s_parts[1].ljust(3, '0')) if len(s_parts) > 1 else 0
     return h * 3600 + m * 60 + s + ms / 1000.0
 
+def seconds_to_hms(seconds: float) -> str:
+    """
+    Converts total seconds into a standardized HH:MM:SS.mmm format string.
+    This function is the single source of truth for time representation to the agent,
+    ensuring millisecond precision across all tool outputs.
+
+    Args:
+        seconds: The total number of seconds as a float.
+
+    Returns:
+        A string formatted as HH:MM:SS.mmm.
+    """
+    if seconds < 0:
+        seconds = 0
+    hours, remainder = divmod(seconds, 3600)
+    minutes, seconds_rem = divmod(remainder, 60)
+    seconds_int = int(seconds_rem)
+    milliseconds = int((seconds_rem - seconds_int) * 1000)
+    return f"{int(hours):02d}:{int(minutes):02d}:{seconds_int:02d}.{milliseconds:03d}"
+
 def probe_media_file(file_path: str) -> MediaInfo:
     """
     Probes a media file using ffmpeg and returns a structured MediaInfo object.

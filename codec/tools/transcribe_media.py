@@ -10,7 +10,7 @@ import openai
 
 # Local imports
 from .base import BaseTool
-from ..utils import probe_media_file
+from ..utils import probe_media_file, seconds_to_hms
 
 if TYPE_CHECKING:
     from ..state import State
@@ -19,13 +19,6 @@ if TYPE_CHECKING:
 WHISPER_API_LIMIT_BYTES = 25 * 1024 * 1024
 
 
-def _seconds_to_hmsm(seconds: float) -> str:
-    """Converts seconds to HH:MM:SS.mmm format for readability."""
-    hours, remainder = divmod(seconds, 3600)
-    minutes, seconds_rem = divmod(remainder, 60)
-    seconds_int = int(seconds_rem)
-    milliseconds = int((seconds_rem - seconds_int) * 1000)
-    return f"{int(hours):02d}:{int(minutes):02d}:{seconds_int:02d}.{milliseconds:03d}"
 
 
 class TranscribeMediaArgs(BaseModel):
@@ -194,8 +187,8 @@ class TranscribeMediaTool(BaseTool):
             if not result.get('segments'):
                 return f"{header}\n---\n(No speech detected)"
             for segment in result['segments']:
-                start = _seconds_to_hmsm(segment['start'])
-                end = _seconds_to_hmsm(segment['end'])
+                start = seconds_to_hms(segment['start'])
+                end = seconds_to_hms(segment['end'])
                 text = segment['text'].strip()
                 output.append(f"[{start} -> {end}] {text}")
         
@@ -205,7 +198,7 @@ class TranscribeMediaTool(BaseTool):
             
             all_words = []
             for word_info in result['words']:
-                start = _seconds_to_hmsm(word_info['start'])
+                start = seconds_to_hms(word_info['start'])
                 word = word_info['word']
                 all_words.append(f"[{start}] {word}")
             output.append(" ".join(all_words))

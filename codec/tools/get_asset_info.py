@@ -5,7 +5,7 @@ import openai
 from pydantic import BaseModel, Field
 
 from .base import BaseTool
-from ..utils import probe_media_file
+from ..utils import probe_media_file, seconds_to_hms
 
 # Use a forward reference for the State class to avoid circular imports.
 if TYPE_CHECKING:
@@ -58,7 +58,7 @@ class GetAssetInfoTool(BaseTool):
 
             # Format the output string for this file using the structured MediaInfo object
             info_lines = [f"File: {filename}", "  - Status: OK"]
-            info_lines.append(f"  - Duration: {media_info.duration_sec:.2f} seconds")
+            info_lines.append(f"  - Duration: {seconds_to_hms(media_info.duration_sec)}")
 
             if media_info.has_video:
                 info_lines.append(f"  - Resolution: {media_info.width}x{media_info.height}")

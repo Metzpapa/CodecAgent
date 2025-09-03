@@ -14,7 +14,7 @@ from pydantic import BaseModel, Field
 from PIL import Image, ImageDraw, ImageFont
 
 from .base import BaseTool
-from ..utils import hms_to_seconds
+from ..utils import hms_to_seconds, seconds_to_hms
 import openai
 
 if TYPE_CHECKING:
@@ -259,7 +259,7 @@ class _TimelineVisualizer:
         for i in range(num_ticks + 1):
             x = self.TRACK_LABEL_WIDTH + (i / num_ticks) * self.render_width
             time_sec = self.view_start_sec + (i / num_ticks) * self.view_duration
-            time_str = f"{int(time_sec // 60):02d}:{time_sec % 60:04.1f}"
+            time_str = seconds_to_hms(time_sec)
             draw.line([x, self.RULER_HEIGHT - 10, x, self.RULER_HEIGHT], fill=self.COLOR_TEXT)
             if i < num_ticks:
                 draw.text((x + 3, self.RULER_HEIGHT - 25), time_str, font=self.font_sm, fill=self.COLOR_TEXT)

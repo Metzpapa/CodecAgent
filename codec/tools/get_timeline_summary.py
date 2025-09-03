@@ -8,7 +8,7 @@ from collections import defaultdict
 from pydantic import BaseModel, Field
 
 from .base import BaseTool
-from ..utils import hms_to_seconds
+from ..utils import hms_to_seconds, seconds_to_hms
 
 # Use a forward reference for the State class to avoid circular imports.
 if TYPE_CHECKING:
@@ -92,7 +92,7 @@ class GetTimelineSummaryTool(BaseTool):
         num_video_tracks = len({t for t in all_tracks if t[0] == 'video'})
         num_audio_tracks = len({t for t in all_tracks if t[0] == 'audio'})
 
-        output.append(f"Total Duration: {total_duration:.3f}s")
+        output.append(f"Total Duration: {seconds_to_hms(total_duration)}")
         output.append(f"Sequence: {width}x{height} @ {fps:.2f}fps")
         output.append(f"Tracks: {num_video_tracks} Video, {num_audio_tracks} Audio")
         output.append(f"Total Clips: {len(state.timeline)}")
@@ -134,7 +134,7 @@ class GetTimelineSummaryTool(BaseTool):
             for clip in track_clips:
                 gap_duration = clip.timeline_start_sec - last_clip_end_time
                 if gap_duration > 0.001:
-                    output.append(f"\n  [GAP from {last_clip_end_time:.3f}s to {clip.timeline_start_sec:.3f}s (duration: {gap_duration:.3f}s)]")
+                    output.append(f"\n  [GAP from {seconds_to_hms(last_clip_end_time)} to {seconds_to_hms(clip.timeline_start_sec)} (duration: {seconds_to_hms(gap_duration)})]")
 
                 if clip.timeline_start_sec < last_clip_end_time:
                     output.append(f"\n  [!!! WARNING: OVERLAP DETECTED with previous clip !!!]")
@@ -142,9 +142,9 @@ class GetTimelineSummaryTool(BaseTool):
                 clip_end_time = clip.timeline_start_sec + clip.duration_sec
                 clip_info = [
                     f"\n  - Clip ID: {clip.clip_id}",
-                    f"    Timeline: {clip.timeline_start_sec:.3f}s -> {clip_end_time:.3f}s (Duration: {clip.duration_sec:.3f}s)",
+                    f"    Timeline: {seconds_to_hms(clip.timeline_start_sec)} -> {seconds_to_hms(clip_end_time)} (Duration: {seconds_to_hms(clip.duration_sec)})",
                     f"    Source: {os.path.basename(clip.source_path)} ({'Video' if clip.track_type == 'video' else 'Audio'})",
-                    f"    Source In/Out: {clip.source_in_sec:.3f}s -> {clip.source_out_sec:.3f}s",
+                    f"    Source In/Out: {seconds_to_hms(clip.source_in_sec)} -> {seconds_to_hms(clip.source_out_sec)}",
                     f"    Description: {clip.description or 'N/A'}"
                 ]
                 output.extend(clip_info)

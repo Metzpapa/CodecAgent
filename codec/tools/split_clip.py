@@ -8,7 +8,7 @@ from pydantic import BaseModel, Field
 
 from .base import BaseTool
 from ..state import TimelineClip
-from ..utils import hms_to_seconds # <-- IMPORT THE CENTRALIZED HELPER
+from ..utils import hms_to_seconds, seconds_to_hms
 
 # Use a forward reference for the State class to avoid circular imports.
 if TYPE_CHECKING:
@@ -69,8 +69,8 @@ class SplitClipTool(BaseTool):
         # We use a tiny float tolerance to avoid precision issues at the boundaries.
         if not (clip_start_sec < split_time_sec < clip_end_sec):
             return (
-                f"Error: The split time {split_time_sec:.3f}s is not within the timeline range of clip '{args.clip_id}' "
-                f"(from {clip_start_sec:.3f}s to {clip_end_sec:.3f}s). "
+                f"Error: The split time {seconds_to_hms(split_time_sec)} is not within the timeline range of clip '{args.clip_id}' "
+                f"(from {seconds_to_hms(clip_start_sec)} to {seconds_to_hms(clip_end_sec)}). "
                 f"Please provide a time that is strictly between the clip's start and end."
             )
 
@@ -110,6 +110,6 @@ class SplitClipTool(BaseTool):
         
         # --- 5. Return the "Golden" success message ---
         return (
-            f"Success: Split clip '{args.clip_id}' at {split_time_sec:.3f}s. "
+            f"Success: Split clip '{args.clip_id}' at {seconds_to_hms(split_time_sec)}. "
             f"The original clip has been replaced by two new clips: '{p1_data.clip_id}' and '{p2_data.clip_id}'."
         )
