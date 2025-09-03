@@ -11,11 +11,11 @@ import time
 import re
 import random
 import tempfile
-from typing import Dict, List, Any
+from typing import Dict, List, Any, Optional
 
 # Direct OpenAI import
 import openai
-# --- MODIFICATION: Import specific error types for granular handling ---
+# Import specific error types for granular handling
 from openai import RateLimitError, InternalServerError, APITimeoutError, APIError
 from openai.types.responses import ResponseFunctionToolCall
 
@@ -23,20 +23,20 @@ from openai.types.responses import ResponseFunctionToolCall
 from . import tools
 from .state import State
 from .tools.base import BaseTool
-from .tools.finish_job import JobFinishedException
 from .agent_logging import AgentContextLogger
 
 
 SYSTEM_PROMPT_TEMPLATE = """
 Users Request:
 {user_request}
-You are codec, a skilled and autonomous video editing agent. Your single purpose is to fulfill the user's request and produce a video.
+You are codec, a skilled and collaborative video editing agent. Your purpose is to work with the user to fulfill their request and produce a video.
 
 **Core Directives:**
-1.  **You MUST end every job by calling the `finish_job` tool.** This is your only method of communication with the user and it is non-negotiable.
-2.  **NEVER ask for clarification.** The user's request is your complete set of instructions. Interpret it to the best of your ability and act.
-3.  **A "best effort" video is REQUIRED.** It is always better to deliver an imperfect or "rough draft" video than to ask a question or report a minor failure. The user will provide feedback by submitting a new job.
-4.  **If your first attempt fails, TRY AGAIN.** If an action results in an error (like a black frame from a bad crop), analyze the error, adjust your parameters, and execute the action again. Do not give up and ask the user for help. 
+1.  **Collaborate and Clarify:** Your primary goal is to assist the user. If a request is ambiguous or you need more information to proceed, ask the user for clarification.
+2.  **Use Your Tools:** Execute tools to manipulate the timeline, find media, and render videos based on the user's instructions.
+3.  **Report Your Work:** After you have finished a set of actions, provide a clear, concise text summary of what you have done.
+4.  **Cite Your Output:** When you create a file the user needs to see (like a rendered video or an exported timeline), you MUST reference it in your message by placing the exact filename in square brackets. For example: `I have rendered the video for you. You can view it here: [final_render.mp4]`.
+5.  **Continuous Conversation:** Your work is part of an ongoing conversation. Do not end the job unless the user tells you the project is complete. The `finish_job` tool has been removed.
 """
 
 def _parse_wait_time_from_error_message(message: str) -> float:
@@ -171,7 +171,6 @@ class Agent:
                     time.sleep(current_wait)
                     backoff_delay *= 2
             
-            # --- NEW: Handle transient server-side errors ---
             except (InternalServerError, APITimeoutError) as e:
                 num_retries += 1
                 current_wait = backoff_delay + random.uniform(0, 1)
@@ -183,10 +182,8 @@ class Agent:
                 )
                 time.sleep(current_wait)
                 backoff_delay *= 2
-            # --- END NEW BLOCK ---
 
             except APIError as e:
-                # This will now catch fatal client-side errors (4xx) that are not RateLimitError
                 logging.error(f"Fatal OpenAI API Error: {e}", exc_info=True)
                 pprint.pprint(e.response.json())
                 self.context_logger.log_tool_result("OpenAI_API", f"FATAL ERROR: {e}")
@@ -198,8 +195,9 @@ class Agent:
             return []
 
         self.state.last_response_id = response.id
+        # --- FIX: We now pass the response object itself to the history for better parsing ---
+        self.state.history.extend(response.output)
         self.context_logger.log_model_response(response)
-        self.state.history.extend([item.model_dump() for item in response.output])
 
         tool_calls: List[ResponseFunctionToolCall] = [
             item for item in response.output if item.type == 'function_call'
@@ -211,7 +209,6 @@ class Agent:
         tool_outputs_for_api = []
         self.state.new_multimodal_files = []
 
-        # --- MODIFICATION: Create a temp dir for the entire turn ---
         with tempfile.TemporaryDirectory() as tmpdir:
             for call in tool_calls:
                 tool_to_execute = self.tools.get(call.name)
@@ -221,10 +218,7 @@ class Agent:
                     try:
                         parsed_args = json.loads(call.arguments)
                         validated_args = tool_to_execute.args_schema(**parsed_args)
-                        # Pass the temp dir to the tool
                         tool_output_string = tool_to_execute.execute(self.state, validated_args, self.client, tmpdir)
-                    except JobFinishedException:
-                        raise
                     except Exception as e:
                         tool_output_string = f"Error executing tool '{call.name}': {e}"
                         logging.error(f"Error during tool execution for '{call.name}'", exc_info=True)
@@ -239,41 +233,61 @@ class Agent:
 
             next_api_input = list(tool_outputs_for_api)
             if self.state.new_multimodal_files:
-                # Log the images before the temp dir is destroyed
                 local_paths = [path for _, path in self.state.new_multimodal_files]
                 self.context_logger.log_multimodal_request(local_paths)
 
-                # Prepare the content for the API
                 multimodal_content = [
                     {"type": "input_image", "file_id": file_id}
                     for file_id, _ in self.state.new_multimodal_files
                 ]
                 next_api_input.append({"role": "user", "content": multimodal_content})
-        # --- END MODIFICATION: The temp dir is now cleaned up ---
         
         self.state.history.extend(next_api_input)
         return next_api_input
 
-    def run_to_completion(self, prompt: str):
+    def process_turn(self, user_prompt: str) -> Optional[str]:
         """
-        Starts and manages the agent's execution loop for a user's request.
-        This method now uses `_execute_turn` as its core building block.
+        Processes a single turn of the conversation.
+        Takes a user prompt, executes any necessary tool calls, and returns the
+        agent's final text response for that turn, or None if no text was generated.
         """
         if self.state.initial_prompt is None:
-            self.state.initial_prompt = prompt
+            self.state.initial_prompt = user_prompt
+            final_system_prompt = SYSTEM_PROMPT_TEMPLATE.format(user_request=self.state.initial_prompt)
+            self.context_logger.log_initial_setup(
+                model_name=self.model_name,
+                system_prompt=final_system_prompt,
+                tools=self.openai_tools_payload
+            )
+        else:
+            final_system_prompt = ""
 
-        final_system_prompt = SYSTEM_PROMPT_TEMPLATE.format(user_request=self.state.initial_prompt)
-        self.context_logger.log_initial_setup(
-            model_name=self.model_name,
-            system_prompt=final_system_prompt,
-            tools=self.openai_tools_payload
-        )
-        self.context_logger.log_user_prompt(prompt)
+        self.context_logger.log_user_prompt(user_prompt)
 
-        current_api_input: List[Dict[str, Any]] = [{"role": "user", "content": prompt}]
-        self.state.history.extend(current_api_input)
+        # --- FIX: Keep track of where this turn's history starts ---
+        turn_start_index = len(self.state.history)
+        
+        current_api_input: List[Dict[str, Any]] = [{"role": "user", "content": user_prompt}]
+        self.state.history.append(current_api_input[0])
 
         while current_api_input:
             current_api_input = self._execute_turn(current_api_input, final_system_prompt)
         
-        logging.warning("\nAgent has finished its turn without calling finish_job. This may be an error.")
+        # --- FIX: Search for the last message within THIS turn only ---
+        last_model_message = ""
+        # Search backwards from the end of the history to the start of this turn
+        for item in reversed(self.state.history[turn_start_index:]):
+            # The history now contains Pydantic models, not dicts
+            if hasattr(item, 'type') and item.type == 'message' and item.role == 'assistant':
+                text_parts = [
+                    content.text for content in item.content if hasattr(content, 'text')
+                ]
+                last_model_message = "".join(text_parts).strip()
+                if last_model_message:
+                    break
+
+        if not last_model_message:
+            logging.warning("Agent turn ended without a final text response from the model.")
+            return None
+
+        return last_model_message

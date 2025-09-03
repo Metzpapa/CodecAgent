@@ -169,7 +169,12 @@ class AgentContextLogger:
 
             if item.type == 'message':
                 text_content = "".join([c.text for c in item.content if hasattr(c, 'text')])
-                self._write_readable(f"\n\nModel: {text_content.strip()}")
+                # Instead of calling _write_readable, which streams to the console,
+                # we will write this message ONLY to the file log. The CLI is responsible
+                # for printing the final agent response to the console.
+                message_for_file = f"\n\nModel: {text_content.strip()}"
+                self.readable_log_file.write(message_for_file)
+                self.readable_log_file.flush()
             
             elif item.type == 'function_call':
                 tool_call_str = (

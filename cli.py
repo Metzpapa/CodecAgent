@@ -4,6 +4,7 @@ import os
 import uuid
 import shutil
 import logging
+import re
 from pathlib import Path
 from dotenv import load_dotenv
 
@@ -16,7 +17,6 @@ from rich.prompt import Prompt
 from codec.agent import Agent
 from codec.state import State
 from codec.agent_logging import AgentContextLogger
-from codec.tools.finish_job import JobFinishedException
 
 # --- Configuration ---
 load_dotenv()
@@ -24,7 +24,6 @@ SAMPLE_PROJECT_PATH = os.environ.get("SAMPLE_PROJECT_PATH")
 JOBS_BASE_DIR = Path("codec_jobs")
 
 # --- Setup Logging to Console ---
-# This will make the AgentContextLogger print beautifully to the terminal
 logging.basicConfig(
     level="INFO",
     format="%(message)s",
@@ -71,35 +70,33 @@ def run_cli():
         agent = Agent(state=state, context_logger=context_logger)
 
         # 3. The Interaction Loop
-        console.print("\n[bold magenta]Welcome to the Codec Agent CLI (Batch Mode).[/bold magenta]")
-        console.print("Each prompt will run to completion. Type 'exit' or 'quit' to end the session.")
+        console.print("\n[bold magenta]Welcome to the Codec Agent CLI (Interactive Mode).[/bold magenta]")
+        console.print("This is a continuous conversation. Type 'exit' or 'quit' to end the session.")
         
         while True:
-            prompt = Prompt.ask("[bold yellow]You[/bold yellow]")
+            prompt = Prompt.ask("\n[bold yellow]You[/bold yellow]")
             if prompt.lower() in ['exit', 'quit']:
                 break
 
             try:
-                # Call run_to_completion, which will run the agent in a loop until it calls finish_job
-                agent.run_to_completion(prompt)
+                agent_response = agent.process_turn(prompt)
 
-            except JobFinishedException as e:
-                # Handle the exception as the end of a SINGLE JOB.
-                # Instead of breaking the loop, we print the result and continue,
-                # allowing for the next prompt.
-                console.print("\n[bold green]JOB FINISHED[/bold green]")
-                console.print(f"Final Message: {e.result.get('message')}")
-                
-                # --- MODIFICATION: Handle a list of output paths (attachments) ---
-                output_paths = e.result.get('output_paths')
-                if output_paths:
-                    console.print("Attachments:")
-                    for path in output_paths:
-                        console.print(f"  - {path}")
-                # --- END MODIFICATION ---
+                # --- FIX: Only process the response if the agent actually said something ---
+                if agent_response:
+                    # Print the agent's text response to the console
+                    console.print(f"\n[bold cyan]Agent[/bold cyan]: {agent_response}")
 
-                console.print("-" * 50)
-                # The loop continues, waiting for the next prompt...
+                    # Parse the response for file citations
+                    referenced_files = re.findall(r'\[([\w\.\-\_]+)\]', agent_response)
+                    if referenced_files:
+                        console.print("\n[bold green]Referenced Files:[/bold green]")
+                        for filename in referenced_files:
+                            # Construct the full, absolute path for the developer
+                            full_path = (output_dir / filename).resolve()
+                            # Use rich's link markup to make it clickable in compatible terminals
+                            console.print(f"  - [link=file://{full_path}]{full_path}[/link]")
+                        console.print("-" * 50)
+                # If agent_response is None, we simply do nothing and wait for the next user prompt.
 
             except Exception as e:
                 console.print(f"[bold red]An unexpected error occurred in the agent run:[/bold red]")
