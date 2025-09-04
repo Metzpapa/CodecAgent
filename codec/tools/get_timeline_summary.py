@@ -12,7 +12,7 @@ from ..utils import hms_to_seconds, seconds_to_hms
 
 # Use a forward reference for the State class to avoid circular imports.
 if TYPE_CHECKING:
-    from ..state import State
+    from ..state import State, TimelineClip
 
 
 class GetTimelineSummaryArgs(BaseModel):
@@ -45,11 +45,63 @@ class GetTimelineSummaryTool(BaseTool):
 
     @property
     def description(self) -> str:
-        return "Provides a detailed text-based summary of the current editing timeline. By default, it shows all clips on all tracks. Use the optional parameters to filter the summary to a specific track or time range."
+        return (
+            "Provides a detailed text-based summary of the current editing timeline, showing all clips on all tracks. "
+            "The summary for each clip includes its `clip_id`, source file, timeline position, and a list of any "
+            "applied keyframes with their exact timestamps. Use the optional parameters to filter the summary to a "
+            "specific track or time range."
+        )
 
     @property
     def args_schema(self):
         return GetTimelineSummaryArgs
+
+    def _format_clip_details(self, clip: 'TimelineClip', last_clip_end_time: float) -> list[str]:
+        """Helper function to format the details for a single clip, including keyframes."""
+        output = []
+        
+        # --- Check for Gaps or Overlaps ---
+        gap_duration = clip.timeline_start_sec - last_clip_end_time
+        if gap_duration > 0.001:
+            output.append(f"\n  [GAP from {seconds_to_hms(last_clip_end_time)} to {seconds_to_hms(clip.timeline_start_sec)} (duration: {seconds_to_hms(gap_duration)})]")
+        if clip.timeline_start_sec < last_clip_end_time:
+            output.append(f"\n  [!!! WARNING: OVERLAP DETECTED with previous clip !!!]")
+
+        # --- Basic Clip Info ---
+        clip_end_time = clip.timeline_start_sec + clip.duration_sec
+        clip_info = [
+            f"\n  - Clip ID: {clip.clip_id}",
+            f"    Timeline: {seconds_to_hms(clip.timeline_start_sec)} -> {seconds_to_hms(clip_end_time)} (Duration: {seconds_to_hms(clip.duration_sec)})",
+            f"    Source: {os.path.basename(clip.source_path)} ({'Video' if clip.track_type == 'video' else 'Audio'})",
+            f"    Source In/Out: {seconds_to_hms(clip.source_in_sec)} -> {seconds_to_hms(clip.source_out_sec)}",
+            f"    Description: {clip.description or 'N/A'}"
+        ]
+        output.extend(clip_info)
+
+        # --- NEW: Keyframe Info ---
+        if clip.transformations:
+            output.append("    Keyframes:")
+            # Sort keyframes by their relative time to ensure chronological order
+            for kf in sorted(clip.transformations, key=lambda k: k.time_sec):
+                timeline_kf_sec = clip.timeline_start_sec + kf.time_sec
+                kf_time_str = seconds_to_hms(timeline_kf_sec)
+                
+                # The first keyframe (at time 0 of the clip) is a base state, not an animation point.
+                is_first_keyframe = abs(kf.time_sec) < 0.001
+                interp_str = "" if is_first_keyframe else f" (interpolation: {kf.interpolation})"
+                
+                output.append(f"      - Time: {kf_time_str}{interp_str}")
+                
+                # List all non-null properties for this keyframe
+                props = {
+                    "position": kf.position, "scale": kf.scale, "rotation": kf.rotation,
+                    "opacity": kf.opacity, "anchor_point": kf.anchor_point
+                }
+                for key, value in props.items():
+                    if value is not None:
+                        output.append(f"        - {key}: {value}")
+        
+        return output
 
     def execute(self, state: 'State', args: GetTimelineSummaryArgs, client: openai.OpenAI, tmpdir: str) -> str:
         if not state.timeline:
@@ -87,7 +139,7 @@ class GetTimelineSummaryTool(BaseTool):
         output.append("=" * 40)
 
         total_duration = state.get_timeline_duration()
-        fps, width, height = state.get_sequence_properties() # Use the new state method
+        fps, width, height = state.get_sequence_properties()
         all_tracks = set((c.track_type, c.track_number) for c in state.timeline)
         num_video_tracks = len({t for t in all_tracks if t[0] == 'video'})
         num_audio_tracks = len({t for t in all_tracks if t[0] == 'audio'})
@@ -113,7 +165,6 @@ class GetTimelineSummaryTool(BaseTool):
         if parsed_track_type and parsed_track_number:
             tracks_to_iterate = [(parsed_track_type, parsed_track_number)]
         else:
-            # Sort V tracks, then A tracks, both numerically
             tracks_to_iterate = sorted(list(all_tracks), key=lambda t: (t[0], t[1]))
 
         if not tracks_to_iterate:
@@ -132,22 +183,7 @@ class GetTimelineSummaryTool(BaseTool):
             last_clip_end_time = start_sec if start_sec is not None else 0.0
             
             for clip in track_clips:
-                gap_duration = clip.timeline_start_sec - last_clip_end_time
-                if gap_duration > 0.001:
-                    output.append(f"\n  [GAP from {seconds_to_hms(last_clip_end_time)} to {seconds_to_hms(clip.timeline_start_sec)} (duration: {seconds_to_hms(gap_duration)})]")
-
-                if clip.timeline_start_sec < last_clip_end_time:
-                    output.append(f"\n  [!!! WARNING: OVERLAP DETECTED with previous clip !!!]")
-                
-                clip_end_time = clip.timeline_start_sec + clip.duration_sec
-                clip_info = [
-                    f"\n  - Clip ID: {clip.clip_id}",
-                    f"    Timeline: {seconds_to_hms(clip.timeline_start_sec)} -> {seconds_to_hms(clip_end_time)} (Duration: {seconds_to_hms(clip.duration_sec)})",
-                    f"    Source: {os.path.basename(clip.source_path)} ({'Video' if clip.track_type == 'video' else 'Audio'})",
-                    f"    Source In/Out: {seconds_to_hms(clip.source_in_sec)} -> {seconds_to_hms(clip.source_out_sec)}",
-                    f"    Description: {clip.description or 'N/A'}"
-                ]
-                output.extend(clip_info)
-                last_clip_end_time = clip_end_time
+                output.extend(self._format_clip_details(clip, last_clip_end_time))
+                last_clip_end_time = clip.timeline_start_sec + clip.duration_sec
 
         return "\n".join(output)

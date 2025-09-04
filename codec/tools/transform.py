@@ -85,7 +85,11 @@ class TransformTool(BaseTool):
     def description(self) -> str:
         return (
             "Applies one or more spatial transformations to one or more clips. This is the primary tool for all layout, "
-            "animation, and keyframing tasks, including Picture-in-Picture, split screens, and complex motion."
+            "animation, and keyframing tasks. To **update** an existing keyframe, call this tool again with the same "
+            "`at_time`. To **delete** a keyframe for a specific property, set that property's value to `null` at the "
+            "precise `at_time`. For accurate updates or deletions, you should first use `get_timeline_summary` to find "
+            "the exact timestamp of the keyframe you wish to modify." 
+            "The project settings are always in 1920x1080, so 1920x1080 should always be used, regardless of the clip resolution "
         )
 
     @property
@@ -93,7 +97,6 @@ class TransformTool(BaseTool):
         return TransformArgs
 
     def execute(self, state: 'State', args: TransformArgs, client: openai.OpenAI, tmpdir: str) -> str:
-        # --- PHASE 1: VALIDATE AND APPLY KEYFRAMES TO STATE (Unchanged) ---
         modified_clips = set()
         errors = []
         applied_transformations = []
@@ -104,6 +107,7 @@ class TransformTool(BaseTool):
                 errors.append(f"Transformation #{i+1}: Clip with ID '{t.clip_id}' not found.")
                 continue
 
+            # --- 1. Determine Keyframe Time ---
             if t.at_time:
                 keyframe_timeline_sec = hms_to_seconds(t.at_time)
                 keyframe_relative_sec = keyframe_timeline_sec - target_clip.timeline_start_sec
@@ -118,21 +122,53 @@ class TransformTool(BaseTool):
                 )
                 continue
 
-            keyframe_data = t.properties.model_dump(exclude_none=True)
-            if 'position' in keyframe_data: keyframe_data['position'] = tuple(keyframe_data['position'])
-            if 'anchor_point' in keyframe_data: keyframe_data['anchor_point'] = tuple(keyframe_data['anchor_point'])
-
-            new_keyframe = Keyframe(time_sec=keyframe_relative_sec, interpolation=t.interpolation, **keyframe_data)
-            target_clip.transformations.append(new_keyframe)
-            target_clip.transformations.sort(key=lambda kf: kf.time_sec)
+            # --- 2. Find or Create Keyframe (UPSERT LOGIC) ---
+            existing_keyframe = None
+            for kf in target_clip.transformations:
+                if abs(kf.time_sec - keyframe_relative_sec) < 0.001: # Tolerance for float comparison
+                    existing_keyframe = kf
+                    break
             
+            properties_to_apply = t.properties.model_dump() # Includes nulls for deletion
+
+            if existing_keyframe:
+                # --- UPDATE/DELETE logic for an existing keyframe ---
+                for prop_name, prop_value in properties_to_apply.items():
+                    # Convert list to tuple for position/anchor_point before setting
+                    if prop_value is not None and prop_name in ['position', 'anchor_point']:
+                        prop_value = tuple(prop_value)
+                    setattr(existing_keyframe, prop_name, prop_value)
+                
+                existing_keyframe.interpolation = t.interpolation
+
+                # Clean up keyframe if it has no properties left (and isn't the base keyframe)
+                is_base_keyframe = abs(existing_keyframe.time_sec) < 0.001
+                has_properties = any([
+                    existing_keyframe.position, existing_keyframe.scale is not None,
+                    existing_keyframe.rotation is not None, existing_keyframe.opacity is not None,
+                    existing_keyframe.anchor_point
+                ])
+                if not has_properties and not is_base_keyframe:
+                    target_clip.transformations.remove(existing_keyframe)
+
+            else:
+                # --- CREATE logic for a new keyframe ---
+                keyframe_data = {k: v for k, v in properties_to_apply.items() if v is not None}
+                if 'position' in keyframe_data: keyframe_data['position'] = tuple(keyframe_data['position'])
+                if 'anchor_point' in keyframe_data: keyframe_data['anchor_point'] = tuple(keyframe_data['anchor_point'])
+
+                if keyframe_data: # Only create if there are properties to set
+                    new_keyframe = Keyframe(time_sec=keyframe_relative_sec, interpolation=t.interpolation, **keyframe_data)
+                    target_clip.transformations.append(new_keyframe)
+
+            target_clip.transformations.sort(key=lambda kf: kf.time_sec)
             modified_clips.add(t.clip_id)
             applied_transformations.append({'clip': target_clip, 'timeline_sec': keyframe_timeline_sec})
 
         if errors:
             return "Operation failed with errors:\n- " + "\n- ".join(errors)
 
-        # --- PHASE 2: GENERATE AND UPLOAD VISUAL PREVIEWS (Refactored) ---
+        # --- PHASE 3: GENERATE AND UPLOAD VISUAL PREVIEWS ---
         preview_count = 0
         for transform_info in applied_transformations:
             try:
@@ -145,7 +181,7 @@ class TransformTool(BaseTool):
             except Exception as e:
                 logging.error(f"Failed to generate preview for clip '{transform_info['clip'].clip_id}': {e}", exc_info=True)
 
-        # --- PHASE 3: FORMULATE FINAL RESPONSE (MODIFIED) ---
+        # --- PHASE 4: FORMULATE FINAL RESPONSE ---
         confirmation = (
             f"Successfully applied {len(args.transformations)} transformations to {len(modified_clips)} clips: "
             f"{', '.join(sorted(list(modified_clips)))}."
@@ -166,16 +202,12 @@ class TransformTool(BaseTool):
         """
         Orchestrates the creation of a side-by-side preview image and uploads it.
         """
-        # 1. Create the composite image using our new helper.
         composite_image_path = self._create_side_by_side_preview(state, clip, timeline_sec, tmpdir)
-
-        # 2. Upload the resulting image for the agent to see.
         with open(composite_image_path, "rb") as f:
             uploaded_file = client.files.create(file=f, purpose="vision")
-        
         return uploaded_file.id, str(composite_image_path)
 
-    # --- NEW: CORE LOGIC FOR CREATING THE SIDE-BY-SIDE PREVIEW IMAGE ---
+    # --- CORE LOGIC FOR CREATING THE SIDE-BY-SIDE PREVIEW IMAGE ---
     def _create_side_by_side_preview(
         self, state: 'State', clip: TimelineClip, timeline_sec: float, tmpdir: str
     ) -> str:
@@ -185,8 +217,6 @@ class TransformTool(BaseTool):
         """
         tmp_path = Path(tmpdir)
         
-        # --- 1. Generate "Program Monitor" (Right Side) ---
-        # This renders the full timeline at the specified moment, ensuring an exact preview.
         program_frame_path = tmp_path / f"program_{clip.clip_id}_{timeline_sec:.3f}.png"
         rendering.render_preview_frame(
             state=state,
@@ -195,8 +225,6 @@ class TransformTool(BaseTool):
             tmpdir=tmpdir
         )
 
-        # --- 2. Generate "Source Monitor" (Left Side) ---
-        # Calculate the corresponding timestamp in the original source file.
         keyframe_relative_sec = timeline_sec - clip.timeline_start_sec
         source_timestamp_sec = clip.source_in_sec + keyframe_relative_sec
         
@@ -211,15 +239,12 @@ class TransformTool(BaseTool):
             logging.error(f"FFmpeg failed to extract source frame: {e.stderr.decode()}")
             raise
 
-        # --- 3. Stitch and Label the Images using Pillow ---
         _, seq_width, seq_height = state.get_sequence_properties()
         
         with Image.open(source_frame_path) as src_img, Image.open(program_frame_path) as prog_img:
-            # Ensure both images are resized to the sequence dimensions for consistent layout
             src_img = src_img.resize((seq_width, seq_height), Image.Resampling.LANCZOS)
             prog_img = prog_img.resize((seq_width, seq_height), Image.Resampling.LANCZOS)
 
-            # Define layout constants
             padding = 20
             header_height = 50
             font_size = 24
@@ -227,7 +252,6 @@ class TransformTool(BaseTool):
             total_width = (seq_width * 2) + (padding * 3)
             total_height = seq_height + header_height + padding
 
-            # Create the final canvas
             composite_img = Image.new('RGB', (total_width, total_height), 'black')
             draw = ImageDraw.Draw(composite_img)
             
@@ -236,15 +260,12 @@ class TransformTool(BaseTool):
             except IOError:
                 font = ImageFont.load_default()
 
-            # Paste the images
             composite_img.paste(src_img, (padding, header_height))
             composite_img.paste(prog_img, (seq_width + padding * 2, header_height))
 
-            # Add labels
             draw.text((padding, padding), "Source Monitor", fill="white", font=font)
             draw.text((seq_width + padding * 2, padding), "Program Monitor", fill="white", font=font)
 
-            # Save the final composite image
             final_output_path = tmp_path / f"preview_{clip.clip_id}_{timeline_sec:.3f}_composite.png"
             composite_img.save(final_output_path)
 
