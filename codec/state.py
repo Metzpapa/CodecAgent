@@ -15,11 +15,20 @@ class Keyframe(BaseModel):
     interpolation: Literal["linear", "easy ease", "hold"] = "easy ease"
     
     # Optional transformation properties
-    position: Optional[Tuple[float, float]] = Field(None, description="(x, y) in normalized coordinates (-1 to 1)")
+    position: Optional[Tuple[float, float]] = Field(
+        None,
+        description="(x, y) in normalized coordinates, where (0.0, 0.0) is the top-left corner and (1.0, 1.0) is the bottom-right corner of the video frame."
+    )
     scale: Optional[float] = Field(None, description="1.0 is original size")
     rotation: Optional[float] = Field(None, description="In degrees")
-    opacity: Optional[float] = Field(None, description="0.0 to 1.0")
-    anchor_point: Optional[Tuple[float, float]] = Field(None, description="(x, y) in normalized coordinates")
+    opacity: Optional[float] = Field(
+        None,
+        description="A percentage from 0.0 (transparent) to 100.0 (opaque)."
+    )
+    anchor_point: Optional[Tuple[float, float]] = Field(
+        None,
+        description="(x, y) in normalized coordinates relative to the clip's own dimensions, where (0.0, 0.0) is its top-left and (1.0, 1.0) is its bottom-right."
+    )
 
 
 class TimelineClip(BaseModel):

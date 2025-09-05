@@ -99,7 +99,12 @@ class GetTimelineSummaryTool(BaseTool):
                 }
                 for key, value in props.items():
                     if value is not None:
-                        output.append(f"        - {key}: {value}")
+                        # Format coordinate tuples for readability
+                        if isinstance(value, tuple) and len(value) == 2:
+                            formatted_value = f"({value[0]:.3f}, {value[1]:.3f})"
+                            output.append(f"        - {key}: {formatted_value}")
+                        else:
+                            output.append(f"        - {key}: {value}")
         
         return output
 

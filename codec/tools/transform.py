@@ -27,11 +27,11 @@ class TransformProperties(BaseModel):
         None,
         min_length=2,
         max_length=2,
-        description="The [x, y] position of the clip's anchor point in pixels. The origin (0,0) is the top-left corner of the sequence."
+        description="The [x, y] position of the clip's anchor point in normalized coordinates. (0.0, 0.0) is the top-left corner of the sequence, (1.0, 1.0) is the bottom-right."
     )
     scale: Optional[float] = Field(
         None,
-        description="The scale of the clip as a multiplier. 1.0 is original size) 0.5 is half size, 2.0 is double size."
+        description="The scale of the clip as a multiplier. 1.0 is original size, 0.5 is half size, 2.0 is double size."
     )
     rotation: Optional[float] = Field(
         None,
@@ -45,7 +45,7 @@ class TransformProperties(BaseModel):
         None,
         min_length=2,
         max_length=2,
-        description="The [x, y] anchor point within the clip itself in pixels, relative to its top-left corner. By default, this is the clip's center."
+        description="The [x, y] anchor point within the clip itself in normalized coordinates, relative to its top-left corner. By default, this is the clip's center (0.5, 0.5)."
     )
 
 
@@ -85,11 +85,11 @@ class TransformTool(BaseTool):
     def description(self) -> str:
         return (
             "Applies one or more spatial transformations to one or more clips. This is the primary tool for all layout, "
-            "animation, and keyframing tasks. To **update** an existing keyframe, call this tool again with the same "
-            "`at_time`. To **delete** a keyframe for a specific property, set that property's value to `null` at the "
-            "precise `at_time`. For accurate updates or deletions, you should first use `get_timeline_summary` to find "
-            "the exact timestamp of the keyframe you wish to modify." 
-            "The project settings are always in 1920x1080, so 1920x1080 should always be used, regardless of the clip resolution "
+            "animation, and keyframing tasks. All coordinates for 'position' and 'anchor_point' are normalized, where "
+            "(0.0, 0.0) is the top-left corner and (1.0, 1.0) is the bottom-right. To **update** an existing keyframe, "
+            "call this tool again with the same `at_time`. To **delete** a keyframe for a specific property, set that "
+            "property's value to `null` at the precise `at_time`. For accurate updates or deletions, you should first "
+            "use `get_timeline_summary` to find the exact timestamp of the keyframe you wish to modify."
         )
 
     @property

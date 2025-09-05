@@ -1,4 +1,4 @@
-# codec/backend/database.py
+# codec/database.py
 
 import os
 from datetime import datetime

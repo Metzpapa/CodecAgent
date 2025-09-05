@@ -1,4 +1,4 @@
-# codecagent/codec/rendering.py
+# codec/rendering.py
 
 import os
 import subprocess
@@ -209,10 +209,10 @@ def _state_to_mlt_xml(state: 'State') -> str:
         start_frames = int(round(clip.timeline_start_sec * fps))
         end_frames = start_frames + int(round(clip.duration_sec * fps)) - 1
 
-        master_kfs = _get_master_keyframes(clip, width, height)
+        master_kfs = _get_master_keyframes(clip)
         if not master_kfs: continue
 
-        rect_kfs_str = _build_rect_kfs_string(master_kfs, clip, fps)
+        rect_kfs_str = _build_rect_kfs_string(master_kfs, clip, fps, width, height)
         rot_kfs_str = _build_generic_kfs_string(master_kfs, 'rotation', fps)
 
         # A filter is applied to the tractor but constrained to a time range (in/out)
@@ -238,7 +238,7 @@ def _state_to_mlt_xml(state: 'State') -> str:
 
 # --- Keyframe Generation Helpers ---
 
-def _get_master_keyframes(clip: 'TimelineClip', seq_width: int, seq_height: int) -> List[Dict[str, Any]]:
+def _get_master_keyframes(clip: 'TimelineClip') -> List[Dict[str, Any]]:
     """
     Creates a unified list of keyframes, ensuring that every keyframe object
     has a value for every transformable property, carrying forward previous values
@@ -250,11 +250,11 @@ def _get_master_keyframes(clip: 'TimelineClip', seq_width: int, seq_height: int)
 
     master_kfs = []
     last_props = {
-        "position": (seq_width / 2, seq_height / 2),
+        "position": (0.5, 0.5),
         "scale": 1.0,
         "rotation": 0.0,
         "opacity": 100.0,
-        "anchor_point": (clip.source_width / 2, clip.source_height / 2),
+        "anchor_point": (0.5, 0.5),
         "interpolation": "easy ease"
     }
 
@@ -277,9 +277,10 @@ def _get_master_keyframes(clip: 'TimelineClip', seq_width: int, seq_height: int)
     return master_kfs
 
 
-def _build_rect_kfs_string(master_kfs: List[Dict[str, Any]], clip: 'TimelineClip', fps: float) -> str:
+def _build_rect_kfs_string(master_kfs: List[Dict[str, Any]], clip: 'TimelineClip', fps: float, seq_width: int, seq_height: int) -> str:
     """
-    Builds the complex keyframe string for the MLT affine filter's 'rect' property.
+    Builds the complex keyframe string for the MLT affine filter's 'rect' property,
+    converting normalized coordinates to absolute pixel values.
     Format: [frame=X/Y:WxH:Opacity:interp; frame2=...]
     """
     kf_strings = []
@@ -287,9 +288,19 @@ def _build_rect_kfs_string(master_kfs: List[Dict[str, Any]], clip: 'TimelineClip
         frame = int(round(kf['time_sec'] * fps))
         
         scale = kf['scale']
-        pos_x, pos_y = kf['position']
-        anchor_x, anchor_y = kf['anchor_point']
+        pos_x_norm, pos_y_norm = kf['position']
+        anchor_x_norm, anchor_y_norm = kf['anchor_point']
         opacity = kf['opacity']
+        
+        # --- CONVERSION LOGIC ---
+        # Convert normalized sequence position to absolute pixels
+        pos_x = pos_x_norm * seq_width
+        pos_y = pos_y_norm * seq_height
+        
+        # Convert normalized clip anchor point to absolute pixels relative to the clip
+        anchor_x = anchor_x_norm * clip.source_width
+        anchor_y = anchor_y_norm * clip.source_height
+        # --- END CONVERSION ---
         
         # Calculate the scaled width and height of the clip
         w = clip.source_width * scale

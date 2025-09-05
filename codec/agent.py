@@ -1,4 +1,4 @@
-# codec/backend/agent.py
+# codec/agent.py
 
 import os
 import inspect
