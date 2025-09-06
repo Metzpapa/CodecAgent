@@ -207,3 +207,41 @@ class State:
             clip for clip in self.timeline
             if clip.track_type == track_type and clip.track_number == track_number
         ]
+
+    def get_topmost_clip_at_time(self, time_sec: float) -> Optional[TimelineClip]:
+        """
+        Finds the topmost visible video clip at a specific point in the timeline.
+
+        Args:
+            time_sec: The time in seconds on the main timeline to check.
+
+        Returns:
+            The TimelineClip object that is on the highest video track at the
+            given time, or None if no video clip is active at that time.
+        """
+        candidate_clips = []
+
+        for clip in self.timeline:
+            if clip.track_type == 'video':
+                start = clip.timeline_start_sec
+                end = start + clip.duration_sec
+                # A clip is active if the time is within its [start, end) interval.
+                if start <= time_sec < end:
+                    candidate_clips.append(clip)
+        
+        # Edge case: If time_sec is exactly the total duration, the < operator
+        # above will fail. We should find the clip that ends at this exact moment
+        # to correctly visualize the last frame of the timeline.
+        if not candidate_clips and abs(time_sec - self.get_timeline_duration()) < 0.001:
+             for clip in self.timeline:
+                if clip.track_type == 'video':
+                    start = clip.timeline_start_sec
+                    end = start + clip.duration_sec
+                    if abs(time_sec - end) < 0.001:
+                        candidate_clips.append(clip)
+
+        if not candidate_clips:
+            return None
+
+        # From the active clips, return the one with the highest track number
+        return max(candidate_clips, key=lambda c: c.track_number)

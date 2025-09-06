@@ -1,4 +1,4 @@
-# codec/tools/transform.py
+# codecagent/codec/tools/transform.py
 
 import logging
 import ffmpeg
@@ -7,13 +7,13 @@ from pathlib import Path
 import openai
 from pydantic import BaseModel, Field
 
-# --- NEW: Import Pillow for image composition ---
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image
 
 from .base import BaseTool
 from ..state import Keyframe, TimelineClip
 from ..utils import hms_to_seconds
 from .. import rendering
+from .. import visuals  # <-- IMPORT THE NEW VISUALS MODULE
 
 if TYPE_CHECKING:
     from ..state import State
@@ -195,7 +195,6 @@ class TransformTool(BaseTool):
         
         return confirmation
 
-    # --- HELPER METHOD FOR ORCHESTRATING PREVIEW GENERATION ---
     def _generate_and_upload_transform_preview(
         self, state: 'State', client: openai.OpenAI, clip: TimelineClip, timeline_sec: float, tmpdir: str
     ) -> Tuple[str, str]:
@@ -207,16 +206,17 @@ class TransformTool(BaseTool):
             uploaded_file = client.files.create(file=f, purpose="vision")
         return uploaded_file.id, str(composite_image_path)
 
-    # --- CORE LOGIC FOR CREATING THE SIDE-BY-SIDE PREVIEW IMAGE ---
     def _create_side_by_side_preview(
         self, state: 'State', clip: TimelineClip, timeline_sec: float, tmpdir: str
     ) -> str:
         """
         Generates a side-by-side image comparing the source frame to the final
         composited frame and returns the path to the final image.
+        This method now uses the shared visuals module for composition.
         """
         tmp_path = Path(tmpdir)
         
+        # 1. Render the "Program" (timeline) frame
         program_frame_path = tmp_path / f"program_{clip.clip_id}_{timeline_sec:.3f}.png"
         rendering.render_preview_frame(
             state=state,
@@ -225,6 +225,7 @@ class TransformTool(BaseTool):
             tmpdir=tmpdir
         )
 
+        # 2. Extract the corresponding "Source" frame
         keyframe_relative_sec = timeline_sec - clip.timeline_start_sec
         source_timestamp_sec = clip.source_in_sec + keyframe_relative_sec
         
@@ -239,32 +240,21 @@ class TransformTool(BaseTool):
             logging.error(f"FFmpeg failed to extract source frame: {e.stderr.decode()}")
             raise
 
+        # 3. Load images and compose using the shared visuals module
         _, seq_width, seq_height = state.get_sequence_properties()
         
         with Image.open(source_frame_path) as src_img, Image.open(program_frame_path) as prog_img:
+            # Ensure images are consistently sized
             src_img = src_img.resize((seq_width, seq_height), Image.Resampling.LANCZOS)
             prog_img = prog_img.resize((seq_width, seq_height), Image.Resampling.LANCZOS)
 
-            padding = 20
-            header_height = 50
-            font_size = 24
-            
-            total_width = (seq_width * 2) + (padding * 3)
-            total_height = seq_height + header_height + padding
-
-            composite_img = Image.new('RGB', (total_width, total_height), 'black')
-            draw = ImageDraw.Draw(composite_img)
-            
-            try:
-                font = ImageFont.truetype("arial.ttf", font_size)
-            except IOError:
-                font = ImageFont.load_default()
-
-            composite_img.paste(src_img, (padding, header_height))
-            composite_img.paste(prog_img, (seq_width + padding * 2, header_height))
-
-            draw.text((padding, padding), "Source Monitor", fill="white", font=font)
-            draw.text((seq_width + padding * 2, padding), "Program Monitor", fill="white", font=font)
+            # Use the centralized composition function
+            composite_img = visuals.compose_side_by_side(
+                image_left=src_img,
+                label_left="Source Monitor",
+                image_right=prog_img,
+                label_right="Program Monitor"
+            )
 
             final_output_path = tmp_path / f"preview_{clip.clip_id}_{timeline_sec:.3f}_composite.png"
             composite_img.save(final_output_path)

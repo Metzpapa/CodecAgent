@@ -1,19 +1,34 @@
 # codecagent/codec/tools/view_timeline.py
 import os
 import logging
-from typing import Optional, TYPE_CHECKING, Tuple
+import ffmpeg
+from typing import Optional, TYPE_CHECKING, Tuple, List, Literal
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 import openai
 from pydantic import BaseModel, Field
+from PIL import Image
 
 from .base import BaseTool
 from ..utils import hms_to_seconds, seconds_to_hms
-from .. import rendering  # <-- IMPORT THE NEW UNIFIED RENDERING MODULE
+from .. import rendering
+from .. import visuals # <-- IMPORT THE NEW VISUALS MODULE
 
 if TYPE_CHECKING:
-    from ..state import State
+    from ..state import State, TimelineClip
+
+
+class SideBySideConfig(BaseModel):
+    """Configuration for enabling a side-by-side view."""
+    enabled: bool = Field(
+        False,
+        description="Set to true to enable the side-by-side view."
+    )
+    source_clip_id: Optional[str] = Field(
+        None,
+        description="Optional. The clip_id of the source asset to display in the 'Source View'. If omitted, the system will automatically use the source of the topmost visible clip at each requested frame's timestamp."
+    )
 
 
 class ViewTimelineArgs(BaseModel):
@@ -33,12 +48,19 @@ class ViewTimelineArgs(BaseModel):
         description="The timestamp on the main timeline to stop extracting frames at. Format: HH:MM:SS.mmm. If omitted, uses the full timeline duration.",
         pattern=r'^\d{2}:\d{2}:\d{2}(\.\d{1,3})?$'
     )
+    overlays: List[Literal["coordinate_grid", "anchor_point"]] = Field(
+        default_factory=list,
+        description="A list of visual aids to render on top of the frames in both the 'Timeline View' and the 'Source View' (if side_by_side is enabled). 'coordinate_grid' shows a faithful, normalized (0.0 to 1.0) grid. 'anchor_point' shows the clip's current anchor point."
+    )
+    side_by_side: SideBySideConfig = Field(
+        default_factory=SideBySideConfig,
+        description="Configuration for the side-by-side view. When enabled, it shows the 'Timeline View' on the right and the corresponding 'Source View' on the left. Overlays are applied to both for easy comparison."
+    )
 
 
 class ViewTimelineTool(BaseTool):
     """
-    A tool to extract and 'see' a specified number of evenly-spaced, fully composited
-    frames from the timeline within a given time range.
+    A tool to extract and 'see' fully rendered frames from the timeline, with optional overlays and side-by-side source comparison.
     """
 
     @property
@@ -48,9 +70,9 @@ class ViewTimelineTool(BaseTool):
     @property
     def description(self) -> str:
         return (
-            "Extracts and displays a specified number of fully rendered frames from the timeline to 'see' the current edit. "
-            "This correctly handles all video layers, transformations, and opacity (e.g., V2 is shown on top of V1). "
-            "Use this to get an accurate visual overview of the current state of the video."
+            "Extracts and displays fully rendered frames from the timeline to 'see' the current edit. This tool now supports "
+            "visual overlays (like a coordinate grid) and a powerful side-by-side view to compare the composed timeline "
+            "against the original source media. Use this to verify transformations, check layering, and plan your next edit."
         )
 
     @property
@@ -61,7 +83,7 @@ class ViewTimelineTool(BaseTool):
         if not any(c.track_type == 'video' for c in state.timeline):
             return "Error: The timeline contains no video clips. Cannot view the timeline."
 
-        # --- 1. Determine Time Range & Calculate Sample Timestamps (Largely Unchanged) ---
+        # --- 1. Determine Time Range & Calculate Sample Timestamps ---
         start_sec = hms_to_seconds(args.start_time) if args.start_time else 0.0
         end_sec = hms_to_seconds(args.end_time) if args.end_time else state.get_timeline_duration()
 
@@ -72,70 +94,107 @@ class ViewTimelineTool(BaseTool):
         if duration_to_sample <= 0:
             timeline_timestamps = [start_sec]
         else:
-            # Sample frames from the middle of each segment for better representation
             segment_duration = duration_to_sample / args.num_frames
             timeline_timestamps = [start_sec + (i * segment_duration) + (segment_duration / 2) for i in range(args.num_frames)]
 
-        # --- 2. Render and Upload Frames in Parallel (Completely Refactored) ---
-        # Instead of complex batching, we now submit a simple render-and-upload
-        # task for each timestamp to a thread pool.
-        
-        logging.info(f"Starting parallel render of {len(timeline_timestamps)} preview frames using MLT...")
+        # --- 2. Render, Process, and Upload Frames in Parallel ---
+        logging.info(f"Starting parallel processing of {len(timeline_timestamps)} timeline frames...")
         
         successful_frames = 0
         with ThreadPoolExecutor(max_workers=os.cpu_count() or 4) as executor:
-            # Create a future for each frame rendering task
             future_to_ts = {
-                executor.submit(self._render_and_upload_frame, state, ts, tmpdir, client): ts
+                executor.submit(self._process_and_upload_frame, state, args, ts, tmpdir, client): ts
                 for ts in timeline_timestamps
             }
 
             for future in as_completed(future_to_ts):
                 ts = future_to_ts[future]
                 try:
-                    # The future returns the (file_id, local_path) tuple on success
                     file_id, local_path = future.result()
                     state.uploaded_files.append(file_id)
                     state.new_multimodal_files.append((file_id, local_path))
                     successful_frames += 1
                     logging.info(f"Successfully processed frame for timeline at {ts:.3f}s")
                 except Exception as e:
-                    logging.warning(f"Failed to process frame for timeline at {ts:.3f}s: {e}")
+                    logging.warning(f"Failed to process frame for timeline at {ts:.3f}s: {e}", exc_info=True)
         
         if successful_frames == 0:
             return f"Error: Failed to extract any frames from the timeline between {start_sec:.2f}s and {end_sec:.2f}s."
         
         return (
-            f"Successfully rendered and uploaded {successful_frames} frames sampled between {seconds_to_hms(start_sec)} and {seconds_to_hms(end_sec)} "
+            f"Successfully rendered and processed {successful_frames} frames sampled between {seconds_to_hms(start_sec)} and {seconds_to_hms(end_sec)} "
             f"of the timeline. The agent can now view them."
         )
 
-    def _render_and_upload_frame(
-        self, state: 'State', timeline_sec: float, tmpdir: str, client: openai.OpenAI
+    def _process_and_upload_frame(
+        self, state: 'State', args: ViewTimelineArgs, timeline_sec: float, tmpdir: str, client: openai.OpenAI
     ) -> Tuple[str, str]:
         """
-        A helper function to render a single frame using the unified rendering
-        engine and then upload it. Designed to be run in a ThreadPoolExecutor.
+        A helper to render a timeline frame, optionally get its source, apply overlays, compose, and upload.
         """
-        try:
-            # 1. Define a unique path for the output frame.
-            output_path = Path(tmpdir) / f"timeline_view_{timeline_sec:.3f}.png"
-
-            # 2. Call the centralized rendering function. This is where the magic happens.
-            # It renders the fully composited frame, including all layers and transforms.
-            rendering.render_preview_frame(
-                state=state,
-                timeline_sec=timeline_sec,
-                output_path=str(output_path),
-                tmpdir=tmpdir
-            )
-
-            # 3. Upload the resulting file to OpenAI.
-            with open(output_path, "rb") as f:
-                uploaded_file = client.files.create(file=f, purpose="vision")
-            
-            return uploaded_file.id, str(output_path)
+        tmp_path = Path(tmpdir)
         
-        except Exception as e:
-            # Wrap any exception to be caught by the main loop
-            raise RuntimeError(f"Render/upload failed for timestamp {timeline_sec:.3f}s. Details: {e}") from e
+        # 1. Render the fully composited "Timeline View" frame
+        timeline_frame_path = tmp_path / f"timeline_{timeline_sec:.3f}.png"
+        rendering.render_preview_frame(
+            state=state,
+            timeline_sec=timeline_sec,
+            output_path=str(timeline_frame_path),
+            tmpdir=tmpdir
+        )
+        timeline_image = Image.open(timeline_frame_path)
+        
+        final_image = None
+        source_clip_for_overlays: Optional['TimelineClip'] = None
+
+        # 2. Handle Side-by-Side View
+        if args.side_by_side.enabled:
+            source_image = None
+            
+            # Find the relevant source clip
+            if args.side_by_side.source_clip_id:
+                source_clip = state.find_clip_by_id(args.side_by_side.source_clip_id)
+            else:
+                source_clip = state.get_topmost_clip_at_time(timeline_sec)
+            
+            source_clip_for_overlays = source_clip # Use this clip for applying overlays later
+
+            if source_clip:
+                # Extract the corresponding source frame
+                source_time = source_clip.source_in_sec + (timeline_sec - source_clip.timeline_start_sec)
+                source_frame_path = tmp_path / f"source_{source_clip.clip_id}_{timeline_sec:.3f}.png"
+                try:
+                    (
+                        ffmpeg.input(source_clip.source_path, ss=source_time)
+                        .output(str(source_frame_path), vframes=1, format='image2', vcodec='png')
+                        .run(capture_stdout=True, capture_stderr=True, overwrite_output=True)
+                    )
+                    source_image = Image.open(source_frame_path)
+                    # Ensure source is resized to match timeline for consistent composition
+                    source_image = source_image.resize(timeline_image.size, Image.Resampling.LANCZOS)
+                except Exception as e:
+                    logging.error(f"Could not extract source frame for clip '{source_clip.clip_id}': {e}")
+
+            # If no source clip or extraction failed, create a black placeholder
+            if source_image is None:
+                source_image = Image.new("RGB", timeline_image.size, "black")
+
+            # Apply overlays to both images
+            timeline_image = visuals.apply_overlays(timeline_image, args.overlays, state, source_clip_for_overlays, timeline_sec)
+            source_image = visuals.apply_overlays(source_image, args.overlays, state, source_clip_for_overlays, timeline_sec)
+            
+            # Compose the final side-by-side image
+            final_image = visuals.compose_side_by_side(source_image, "Source View", timeline_image, "Timeline View")
+
+        else: # Not side-by-side, just apply overlays to the timeline view
+            source_clip_for_overlays = state.get_topmost_clip_at_time(timeline_sec)
+            final_image = visuals.apply_overlays(timeline_image, args.overlays, state, source_clip_for_overlays, timeline_sec)
+
+        # 3. Save and Upload the final image
+        final_output_path = tmp_path / f"final_view_{timeline_sec:.3f}.png"
+        final_image.save(final_output_path)
+
+        with open(final_output_path, "rb") as f:
+            uploaded_file = client.files.create(file=f, purpose="vision")
+        
+        return uploaded_file.id, str(final_output_path)
