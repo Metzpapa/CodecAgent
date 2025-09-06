@@ -21,6 +21,10 @@ codec_jobs/
 logs/
 *.log
 
+# Test script output
+# Contains generated videos, images, and reports from test_rendering.py
+render_tests_output/
+
 # Celery schedule file
 celerybeat-schedule
 
