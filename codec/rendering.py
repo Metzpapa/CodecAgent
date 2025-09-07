@@ -235,10 +235,19 @@ def _state_to_mlt_xml(state: 'State') -> str:
         xml_parts.append(f'    <filter in="{start_frames}" out="{end_frames}">')
         xml_parts.append(f'      <property name="mlt_service">affine</property>')
         xml_parts.append(f'      <property name="track">{track_index}</property>')
+        
+        # Enable keyframed transformations for smooth rotation
+        xml_parts.append(f'      <property name="transition.keyed">1</property>')
+        
+        # Center the rotation around the clip's center instead of top-left corner
+        xml_parts.append(f'      <property name="transition.halign">center</property>')
+        xml_parts.append(f'      <property name="transition.valign">middle</property>')
+        
         if rect_kfs_str:
             xml_parts.append(f'      <property name="transition.rect">{rect_kfs_str}</property>')
         if rot_kfs_str:
-            xml_parts.append(f'      <property name="transition.fix_rotate_z">{rot_kfs_str}</property>')
+            # Use rotate_x instead of rotate_z for flat 2D rotation
+            xml_parts.append(f'      <property name="transition.rotate_x">{rot_kfs_str}</property>')
         
         # This property is crucial for the affine filter to correctly handle the alpha channel
         # of the source clip, allowing for opacity animations.

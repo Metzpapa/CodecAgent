@@ -80,35 +80,152 @@ def setup_test_2_compositing(state: State, media_info: Dict[str, Any]):
 def setup_test_3_keyframed_motion(state: State, media_info: Dict[str, Any]):
     """Tests keyframed position and scale, which should work smoothly."""
     # V1 Background
-    setup_test_2_compositing(state, media_info) # Start with the same base
-    # Modify the foreground clip's transformations
-    fg_clip = state.find_clip_by_id("fg")
+    state.add_clip(TimelineClip(
+        clip_id="bg",
+        source_path=media_info[ASSET_1_FILENAME]['path'],
+        source_in_sec=0.0,
+        source_out_sec=5.0,
+        source_total_duration_sec=media_info[ASSET_1_FILENAME]['duration'],
+        timeline_start_sec=0.0,
+        duration_sec=5.0,
+        track_type='video',
+        track_number=1,
+        description="Background on V1",
+        **media_info[ASSET_1_FILENAME]['properties']
+    ))
+    # V2 Foreground
+    fg_clip = TimelineClip(
+        clip_id="fg",
+        source_path=media_info[ASSET_2_FILENAME]['path'],
+        source_in_sec=0.0,
+        source_out_sec=5.0,
+        source_total_duration_sec=media_info[ASSET_2_FILENAME]['duration'],
+        timeline_start_sec=0.0,
+        duration_sec=5.0,
+        track_type='video',
+        track_number=2,
+        description="Foreground on V2, animated position and scale",
+        **media_info[ASSET_2_FILENAME]['properties']
+    )
     fg_clip.transformations = [
         Keyframe(time_sec=0.0, position=(0.2, 0.2), scale=0.4, opacity=100.0),
-        Keyframe(time_sec=4.5, position=(0.8, 0.8), scale=0.6, opacity=100.0)
+        Keyframe(time_sec=4.0, position=(0.8, 0.8), scale=0.6, opacity=100.0)
     ]
+    state.add_clip(fg_clip)
 
 def setup_test_4_keyframed_rotation(state: State, media_info: Dict[str, Any]):
     """Specifically tests rotation, which the user noted was 'glitching'."""
-    # V1 Background
-    setup_test_2_compositing(state, media_info) # Start with the same base
-    # Modify the foreground clip's transformations
-    fg_clip = state.find_clip_by_id("fg")
+    # V1 Background - keep it simple
+    state.add_clip(TimelineClip(
+        clip_id="bg",
+        source_path=media_info[ASSET_1_FILENAME]['path'],
+        source_in_sec=0.0,
+        source_out_sec=5.0,
+        source_total_duration_sec=media_info[ASSET_1_FILENAME]['duration'],
+        timeline_start_sec=0.0,
+        duration_sec=5.0,
+        track_type='video',
+        track_number=1,
+        description="Background on V1",
+        **media_info[ASSET_1_FILENAME]['properties']
+    ))
+    
+    # V2 Foreground - ONLY rotation, no position/scale changes
+    fg_clip = TimelineClip(
+        clip_id="fg",
+        source_path=media_info[ASSET_2_FILENAME]['path'],
+        source_in_sec=0.0,
+        source_out_sec=5.0,
+        source_total_duration_sec=media_info[ASSET_2_FILENAME]['duration'],
+        timeline_start_sec=0.0,
+        duration_sec=5.0,
+        track_type='video',
+        track_number=2,
+        description="Foreground on V2, rotation only",
+        **media_info[ASSET_2_FILENAME]['properties']
+    )
+    # ONLY rotation keyframes, keep everything else static
     fg_clip.transformations = [
-        Keyframe(time_sec=0.0, position=(0.5, 0.5), scale=0.5, rotation=0.0),
-        Keyframe(time_sec=4.5, position=(0.5, 0.5), scale=0.5, rotation=90.0)
+        Keyframe(time_sec=0.0, position=(0.5, 0.5), scale=0.5, rotation=0.0, opacity=100.0, interpolation="linear"),
+        Keyframe(time_sec=4.0, position=(0.5, 0.5), scale=0.5, rotation=180.0, opacity=100.0, interpolation="linear")  # Changed to 180° and moved to 4.0s
     ]
+    state.add_clip(fg_clip)
 
 def setup_test_5_full_animation(state: State, media_info: Dict[str, Any]):
-    """Combines all transformations to replicate the agent's full test case."""
+    """Tests a more visible rotation with movement."""
     # V1 Background
-    setup_test_2_compositing(state, media_info) # Start with the same base
-    # Modify the foreground clip's transformations
-    fg_clip = state.find_clip_by_id("fg")
+    state.add_clip(TimelineClip(
+        clip_id="bg",
+        source_path=media_info[ASSET_1_FILENAME]['path'],
+        source_in_sec=0.0,
+        source_out_sec=5.0,
+        source_total_duration_sec=media_info[ASSET_1_FILENAME]['duration'],
+        timeline_start_sec=0.0,
+        duration_sec=5.0,
+        track_type='video',
+        track_number=1,
+        description="Background on V1",
+        **media_info[ASSET_1_FILENAME]['properties']
+    ))
+    
+    # V2 Foreground
+    fg_clip = TimelineClip(
+        clip_id="fg",
+        source_path=media_info[ASSET_2_FILENAME]['path'],
+        source_in_sec=0.0,
+        source_out_sec=5.0,
+        source_total_duration_sec=media_info[ASSET_2_FILENAME]['duration'],
+        timeline_start_sec=0.0,
+        duration_sec=5.0,
+        track_type='video',
+        track_number=2,
+        description="Foreground on V2, movement + rotation",
+        **media_info[ASSET_2_FILENAME]['properties']
+    )
+    # More dramatic rotation + movement
     fg_clip.transformations = [
-        Keyframe(time_sec=0.0, position=(0.8, 0.2), scale=0.5, rotation=0.0, opacity=80.0),
-        Keyframe(time_sec=4.5, position=(0.2, 0.8), scale=0.5, rotation=10.0, opacity=80.0)
+        Keyframe(time_sec=0.0, position=(0.8, 0.2), scale=0.5, rotation=0.0, opacity=80.0, interpolation="linear"),
+        Keyframe(time_sec=4.0, position=(0.2, 0.8), scale=0.5, rotation=45.0, opacity=80.0, interpolation="linear")  # Changed to 45° and 4.0s
     ]
+    state.add_clip(fg_clip)
+
+def setup_test_6_scale_and_rotation(state: State, media_info: Dict[str, Any]):
+    """Tests scale and rotation together without position changes."""
+    # V1 Background
+    state.add_clip(TimelineClip(
+        clip_id="bg",
+        source_path=media_info[ASSET_1_FILENAME]['path'],
+        source_in_sec=0.0,
+        source_out_sec=5.0,
+        source_total_duration_sec=media_info[ASSET_1_FILENAME]['duration'],
+        timeline_start_sec=0.0,
+        duration_sec=5.0,
+        track_type='video',
+        track_number=1,
+        description="Background on V1",
+        **media_info[ASSET_1_FILENAME]['properties']
+    ))
+    
+    # V2 Foreground
+    fg_clip = TimelineClip(
+        clip_id="fg",
+        source_path=media_info[ASSET_2_FILENAME]['path'],
+        source_in_sec=0.0,
+        source_out_sec=5.0,
+        source_total_duration_sec=media_info[ASSET_2_FILENAME]['duration'],
+        timeline_start_sec=0.0,
+        duration_sec=5.0,
+        track_type='video',
+        track_number=2,
+        description="Foreground on V2, scale + rotation",
+        **media_info[ASSET_2_FILENAME]['properties']
+    )
+    # Scale and rotation, position stays centered
+    fg_clip.transformations = [
+        Keyframe(time_sec=0.0, position=(0.5, 0.5), scale=0.3, rotation=0.0, opacity=100.0, interpolation="linear"),
+        Keyframe(time_sec=4.0, position=(0.5, 0.5), scale=0.7, rotation=90.0, opacity=100.0, interpolation="linear")
+    ]
+    state.add_clip(fg_clip)
 
 
 # --- Test Runner Logic ---
@@ -307,8 +424,9 @@ def main():
         ("1_single_clip", "A single video clip should play full-screen for 5 seconds.", setup_test_1_single_clip),
         ("2_compositing", "A smaller, semi-transparent clip (V2) should appear centered on top of a full-screen background clip (V1).", setup_test_2_compositing),
         ("3_keyframed_motion", "The V2 clip should smoothly animate from the top-left to the bottom-right, growing slightly larger, composited over the V1 background.", setup_test_3_keyframed_motion),
-        ("4_keyframed_rotation", "The V2 clip should rotate 90 degrees clockwise over 5 seconds while staying centered, composited over the V1 background. The rotation should be smooth, not glitchy.", setup_test_4_keyframed_rotation),
-        ("5_full_animation", "The V2 clip should animate diagonally from top-right to bottom-left with a slight rotation, composited over the V1 background. This is the agent's full test case.", setup_test_5_full_animation),
+        ("4_rotation_only", "The V2 clip should rotate 180° while staying centered and scaled. NO 3D effects - should be flat 2D rotation.", setup_test_4_keyframed_rotation),
+        ("5_movement_and_rotation", "The V2 clip should move diagonally AND rotate 45° clearly. Both effects should be visible.", setup_test_5_full_animation),
+        ("6_scale_and_rotation", "The V2 clip should grow larger while rotating 90°, staying centered. This isolates scale+rotation interaction.", setup_test_6_scale_and_rotation),
     ]
 
     # 3. Run all tests
