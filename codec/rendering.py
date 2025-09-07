@@ -179,9 +179,9 @@ def _state_to_mlt_xml(state: 'State') -> str:
             in_frames = int(round(clip.source_in_sec * fps))
             duration_frames = int(round(clip.duration_sec * fps))
             
-            # For playlists, we specify the source producer, the start point in the source (in),
-            # and how long to play it for (length).
-            xml_parts.append(f'    <entry producer="{producer_id}" in="{in_frames}" length="{duration_frames}"/>')
+            # FIX #1: Use 'out' instead of 'length' to prevent playing beyond the intended segment
+            out_frames = in_frames + duration_frames - 1
+            xml_parts.append(f'    <entry producer="{producer_id}" in="{in_frames}" out="{out_frames}"/>')
             
             last_clip_end_frames = start_frames + duration_frames
             
@@ -196,6 +196,20 @@ def _state_to_mlt_xml(state: 'State') -> str:
         playlist_id = track_to_playlist_id[(track_type, track_number)]
         xml_parts.append(f'      <track producer="{playlist_id}"/>')
     xml_parts.append('    </multitrack>')
+
+    # FIX #2: Add compositing transitions between video tracks
+    video_tracks = [(t, n, track_zero_based_index[(t, n)]) for t, n in tracks if t == 'video']
+    if len(video_tracks) > 1:
+        # Add transitions to composite higher tracks onto lower tracks
+        for i in range(len(video_tracks) - 1):
+            lower_track_idx = video_tracks[i][2]
+            upper_track_idx = video_tracks[i + 1][2]
+            xml_parts.append(f'    <transition>')
+            xml_parts.append(f'      <property name="mlt_service">qtblend</property>')
+            xml_parts.append(f'      <property name="a_track">{lower_track_idx}</property>')
+            xml_parts.append(f'      <property name="b_track">{upper_track_idx}</property>')
+            xml_parts.append(f'      <property name="compositing">0</property>')  # 0 = SourceOver (normal alpha compositing)
+            xml_parts.append(f'    </transition>')
 
     # 4. Add affine filters to the tractor for each clip with transformations
     for clip in state.timeline:
@@ -213,21 +227,25 @@ def _state_to_mlt_xml(state: 'State') -> str:
         if not master_kfs: continue
 
         rect_kfs_str = _build_rect_kfs_string(master_kfs, clip, fps, width, height)
-        rot_kfs_str = _build_generic_kfs_string(master_kfs, 'rotation', fps)
+        rot_kfs_str = _build_rotation_kfs_string(master_kfs, fps)
 
         # A filter is applied to the tractor but constrained to a time range (in/out)
         # and a specific track, effectively applying it to a single clip.
         xml_parts.append(f'    <filter in="{start_frames}" out="{end_frames}">')
         xml_parts.append(f'      <property name="mlt_service">affine</property>')
         xml_parts.append(f'      <property name="track">{track_index}</property>')
+        
+        # The affine filter uses 'transition.*' properties as documented
+        # These properties are passed through to the internal affine transition
         if rect_kfs_str:
             xml_parts.append(f'      <property name="transition.rect">{rect_kfs_str}</property>')
         if rot_kfs_str:
             xml_parts.append(f'      <property name="transition.fix_rotate_z">{rot_kfs_str}</property>')
         
-        # This property is crucial for the affine filter to correctly handle the alpha channel
-        # of the source clip, allowing for opacity animations.
+        # Additional properties to ensure proper transformation behavior
         xml_parts.append(f'      <property name="transition.b_alpha">1</property>')
+        xml_parts.append(f'      <property name="transition.distort">0</property>')
+        xml_parts.append(f'      <property name="transition.fill">1</property>')
         xml_parts.append('    </filter>')
 
     xml_parts.append('  </tractor>')
@@ -281,7 +299,8 @@ def _build_rect_kfs_string(master_kfs: List[Dict[str, Any]], clip: 'TimelineClip
     """
     Builds the complex keyframe string for the MLT affine filter's 'rect' property,
     converting normalized coordinates to absolute pixel values.
-    Format: [frame=X/Y:WxH:Opacity:interp; frame2=...]
+    Format: frame=X/Y:WxH:Opacity:interp; frame2=...
+    Note: The rect property uses a special format with :interpolation suffix
     """
     kf_strings = []
     for kf in master_kfs:
@@ -317,24 +336,55 @@ def _build_rect_kfs_string(master_kfs: List[Dict[str, Any]], clip: 'TimelineClip
         interp_map = {"easy ease": "smooth", "linear": "linear", "hold": "discrete"}
         interp = interp_map.get(kf['interpolation'], "smooth")
         
+        # The rect property uses its own format with :interpolation suffix
         kf_strings.append(f"{frame}={x:.3f}/{y:.3f}:{w:.3f}x{h:.3f}:{opacity:.2f}:{interp}")
 
-    return f"[{';'.join(kf_strings)}]"
+    return ';'.join(kf_strings)
+
+
+def _build_rotation_kfs_string(master_kfs: List[Dict[str, Any]], fps: float) -> str:
+    """
+    Builds a keyframe string for the rotation property.
+    According to MLT property animation docs, simple numeric properties use:
+    - frame~value for smooth (Catmull-Rom spline)
+    - frame=value for linear
+    - frame|value for discrete (no interpolation)
+    """
+    kf_strings = []
+    for kf in master_kfs:
+        frame = int(round(kf['time_sec'] * fps))
+        value = kf['rotation']
+        
+        # Map our interpolation types to MLT operators
+        interp_map = {
+            "easy ease": "~",  # smooth (Catmull-Rom spline)
+            "linear": "=",      # linear interpolation
+            "hold": "|"         # discrete (no interpolation)
+        }
+        operator = interp_map.get(kf['interpolation'], "~")
+        
+        kf_strings.append(f"{frame}{operator}{value}")
+        
+    return ';'.join(kf_strings)
 
 
 def _build_generic_kfs_string(master_kfs: List[Dict[str, Any]], prop_name: str, fps: float) -> str:
     """
-    Builds a generic keyframe string for simple properties like rotation.
-    Format: [frame=value:interp; frame2=value2:interp2;...]
+    Builds a generic keyframe string for simple properties.
+    This is kept for potential future use but rotation now uses its own specialized function.
     """
     kf_strings = []
     for kf in master_kfs:
         frame = int(round(kf['time_sec'] * fps))
         value = kf[prop_name]
         
-        interp_map = {"easy ease": "smooth", "linear": "linear", "hold": "discrete"}
-        interp = interp_map.get(kf['interpolation'], "smooth")
+        interp_map = {
+            "easy ease": "~",
+            "linear": "=",
+            "hold": "|"
+        }
+        operator = interp_map.get(kf['interpolation'], "~")
         
-        kf_strings.append(f"{frame}={value}:{interp}")
+        kf_strings.append(f"{frame}{operator}{value}")
         
-    return f"[{';'.join(kf_strings)}]"
+    return ';'.join(kf_strings)

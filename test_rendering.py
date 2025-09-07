@@ -137,20 +137,34 @@ def run_test_case(
     # Define output paths
     preview_path = output_dir / f"{name}_preview.png"
     video_path = output_dir / f"{name}_render.mp4"
+    xml_path = output_dir / f"{name}_project.mlt" # <-- New path for XML
 
     result = {
         "name": name,
         "description": description,
         "preview_path": str(preview_path.relative_to(output_dir)),
         "video_path": str(video_path.relative_to(output_dir)),
+        "xml_path": str(xml_path.relative_to(output_dir)), # <-- Add XML path to results
         "preview_success": False,
         "render_success": False
     }
+
+    # Generate the MLT XML and save it for debugging
+    mlt_xml_content = rendering._state_to_mlt_xml(state)
+    with open(xml_path, "w") as f:
+        f.write(mlt_xml_content)
+    logging.info(f"MLT XML project saved to {xml_path}")
+
+    # Use a temporary file for the melt command
+    mlt_project_path = tmpdir / "project.mlt"
+    with open(mlt_project_path, "w") as f:
+        f.write(mlt_xml_content)
 
     try:
         # Render a preview frame from the middle of the timeline
         preview_time = state.get_timeline_duration() / 2.0
         logging.info(f"Rendering preview frame at {preview_time:.2f}s...")
+        # We can call the internal function directly since we have the XML content
         rendering.render_preview_frame(state, preview_time, str(preview_path), str(tmpdir))
         result["preview_success"] = True
         logging.info(f"Preview frame saved to {preview_path}")
@@ -191,8 +205,9 @@ def generate_html_report(results: List[Dict[str, str]], output_dir: Path):
             .outputs { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; align-items: start; }
             img, video { max-width: 100%; height: auto; border: 1px solid #ccc; border-radius: 4px; }
             .status { font-weight: bold; }
-            .success { color: #28a745; }
+            .rendered { color: #007bff; }
             .failure { color: #dc3545; }
+            .debug-link { margin-top: 10px; }
             @media (max-width: 900px) { .outputs { grid-template-columns: 1fr; } }
         </style>
     </head>
@@ -214,7 +229,7 @@ def generate_html_report(results: List[Dict[str, str]], output_dir: Path):
                     <h3>Preview Frame (Mid-point)</h3>
         """
         if res['preview_success']:
-            html_content += f'<p class="status success">SUCCESS</p><img src="{res["preview_path"]}" alt="Preview for {res["name"]}" />'
+            html_content += f'<p class="status rendered">RENDERED</p><img src="{res["preview_path"]}" alt="Preview for {res["name"]}" />'
         else:
             html_content += '<p class="status failure">FAILED</p><p>Check logs for error details.</p>'
         
@@ -224,12 +239,15 @@ def generate_html_report(results: List[Dict[str, str]], output_dir: Path):
                     <h3>Final Video</h3>
         """
         if res['render_success']:
-            html_content += f'<p class="status success">SUCCESS</p><video controls muted loop src="{res["video_path"]}"></video>'
+            html_content += f'<p class="status rendered">RENDERED</p><video controls muted loop src="{res["video_path"]}"></video>'
         else:
             html_content += '<p class="status failure">FAILED</p><p>Check logs for error details.</p>'
 
-        html_content += """
+        html_content += f"""
                 </div>
+            </div>
+            <div class="debug-link">
+                <a href="{res['xml_path']}" target="_blank">View Generated MLT XML</a>
             </div>
         </div>
         """
