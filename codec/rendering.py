@@ -340,9 +340,14 @@ def _build_rect_kfs_string(master_kfs: List[Dict[str, Any]], clip: 'TimelineClip
         x = pos_x - (anchor_x * scale)
         y = pos_y - (anchor_y * scale)
         
-        # Map interpolation types to MLT symbols (placed before the equals sign)
-        interp_map = {"easy ease": "~=", "linear": "=", "hold": "|="}
-        interp_symbol = interp_map.get(kf['interpolation'], "~=")
+        # Map interpolation types to MLT symbols (using new MLT keyframe types)
+        interp_map = {
+            "easy ease": "i=",    # cubic_in_out for smooth default
+            "linear": "=",        # linear interpolation
+            "discrete": "|=",     # discrete/step
+            "hold": "|="         # hold/step
+        }
+        interp_symbol = interp_map.get(kf['interpolation'], "i=")  # Default to cubic_in_out
         
         kf_strings.append(f"{frame}{interp_symbol}{x:.3f}/{y:.3f}:{w:.3f}x{h:.3f}:{opacity:.2f}")
 
@@ -359,9 +364,14 @@ def _build_generic_kfs_string(master_kfs: List[Dict[str, Any]], prop_name: str, 
         frame = int(round(kf['time_sec'] * fps))
         value = kf[prop_name]
         
-        # Map interpolation types to MLT symbols (placed before the equals sign)
-        interp_map = {"easy ease": "~=", "linear": "=", "hold": "|="}
-        interp_symbol = interp_map.get(kf['interpolation'], "~=")
+        # Map interpolation types to MLT symbols (using new MLT keyframe types)
+        interp_map = {
+            "easy ease": "i=",    # cubic_in_out for smooth default
+            "linear": "=",        # linear interpolation
+            "discrete": "|=",     # discrete/step
+            "hold": "|="         # hold/step
+        }
+        interp_symbol = interp_map.get(kf['interpolation'], "i=")  # Default to cubic_in_out
         
         kf_strings.append(f"{frame}{interp_symbol}{value}")
         

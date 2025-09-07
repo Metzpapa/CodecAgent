@@ -190,7 +190,7 @@ def setup_test_5_full_animation(state: State, media_info: Dict[str, Any]):
     state.add_clip(fg_clip)
 
 def setup_test_6_scale_and_rotation(state: State, media_info: Dict[str, Any]):
-    """Tests scale and rotation together without position changes."""
+    """Tests scale and rotation together without position changes using smooth easy ease interpolation."""
     # V1 Background
     state.add_clip(TimelineClip(
         clip_id="bg",
@@ -217,13 +217,13 @@ def setup_test_6_scale_and_rotation(state: State, media_info: Dict[str, Any]):
         duration_sec=5.0,
         track_type='video',
         track_number=2,
-        description="Foreground on V2, scale + rotation",
+        description="Foreground on V2, scale + rotation with smooth easing",
         **media_info[ASSET_2_FILENAME]['properties']
     )
-    # Scale and rotation, position stays centered
+    # Scale and rotation, position stays centered - using default "easy ease" interpolation
     fg_clip.transformations = [
-        Keyframe(time_sec=0.0, position=(0.5, 0.5), scale=0.3, rotation=0.0, opacity=100.0, interpolation="linear"),
-        Keyframe(time_sec=4.0, position=(0.5, 0.5), scale=0.7, rotation=90.0, opacity=100.0, interpolation="linear")
+        Keyframe(time_sec=0.0, position=(0.5, 0.5), scale=0.3, rotation=0.0, opacity=100.0),
+        Keyframe(time_sec=4.0, position=(0.5, 0.5), scale=0.7, rotation=90.0, opacity=100.0)
     ]
     state.add_clip(fg_clip)
 
@@ -426,7 +426,7 @@ def main():
         ("3_keyframed_motion", "The V2 clip should smoothly animate from the top-left to the bottom-right, growing slightly larger, composited over the V1 background.", setup_test_3_keyframed_motion),
         ("4_rotation_only", "The V2 clip should rotate 180° while staying centered and scaled. NO 3D effects - should be flat 2D rotation.", setup_test_4_keyframed_rotation),
         ("5_movement_and_rotation", "The V2 clip should move diagonally AND rotate 45° clearly. Both effects should be visible.", setup_test_5_full_animation),
-        ("6_scale_and_rotation", "The V2 clip should grow larger while rotating 90°, staying centered. This isolates scale+rotation interaction.", setup_test_6_scale_and_rotation),
+        ("6_scale_and_rotation", "The V2 clip should grow larger while rotating 90°, staying centered. This isolates scale+rotation interaction with smooth cubic ease-in-out interpolation.", setup_test_6_scale_and_rotation),
     ]
 
     # 3. Run all tests
