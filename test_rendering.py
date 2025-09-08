@@ -22,7 +22,6 @@ ASSET_1_FILENAME = "Cutback at lowers 1 .mp4"
 ASSET_2_FILENAME = "cutback at lowers 2.mp4"
 
 # --- Test Case Definitions ---
-
 def setup_test_1_single_clip(state: State, media_info: Dict[str, Any]):
     """A baseline test with a single, full-screen clip on V1."""
     state.add_clip(TimelineClip(
@@ -248,41 +247,37 @@ def run_test_case(
     tmpdir = output_dir / f"tmp_{name}"
     tmpdir.mkdir(exist_ok=True)
 
+    # --- FIX: Create a unique log directory for this specific test case ---
+    log_output_dir = output_dir / f"mlt_logs_{name}"
+    log_output_dir.mkdir(exist_ok=True)
+
     # Populate the state using the provided setup function
     setup_func(state, media_info)
 
     # Define output paths
     preview_path = output_dir / f"{name}_preview.png"
     video_path = output_dir / f"{name}_render.mp4"
-    xml_path = output_dir / f"{name}_project.mlt" # <-- New path for XML
 
     result = {
         "name": name,
         "description": description,
         "preview_path": str(preview_path.relative_to(output_dir)),
         "video_path": str(video_path.relative_to(output_dir)),
-        "xml_path": str(xml_path.relative_to(output_dir)), # <-- Add XML path to results
+        # --- FIX: Point to the new unique directory for the report link ---
+        "xml_dir_path": str(log_output_dir.relative_to(output_dir)),
         "preview_success": False,
         "render_success": False
     }
 
-    # Generate the MLT XML and save it for debugging
-    mlt_xml_content = rendering._state_to_mlt_xml(state)
-    with open(xml_path, "w") as f:
-        f.write(mlt_xml_content)
-    logging.info(f"MLT XML project saved to {xml_path}")
-
-    # Use a temporary file for the melt command
-    mlt_project_path = tmpdir / "project.mlt"
-    with open(mlt_project_path, "w") as f:
-        f.write(mlt_xml_content)
+    # --- REMOVED: Manual XML saving is no longer needed ---
+    # The rendering functions will now handle logging automatically.
 
     try:
         # Render a preview frame from the middle of the timeline
         preview_time = state.get_timeline_duration() / 2.0
         logging.info(f"Rendering preview frame at {preview_time:.2f}s...")
-        # We can call the internal function directly since we have the XML content
-        rendering.render_preview_frame(state, preview_time, str(preview_path), str(tmpdir))
+        # --- FIX: Pass the unique log_output_dir to the rendering function ---
+        rendering.render_preview_frame(state, preview_time, str(preview_path), str(tmpdir), log_dir=log_output_dir)
         result["preview_success"] = True
         logging.info(f"Preview frame saved to {preview_path}")
     except Exception as e:
@@ -291,7 +286,8 @@ def run_test_case(
     try:
         # Render the final video
         logging.info("Rendering final video...")
-        rendering.render_final_video(state, str(video_path), str(tmpdir))
+        # --- FIX: Pass the unique log_output_dir to the rendering function ---
+        rendering.render_final_video(state, str(video_path), str(tmpdir), log_dir=log_output_dir)
         result["render_success"] = True
         logging.info(f"Final video saved to {video_path}")
     except Exception as e:
@@ -364,7 +360,8 @@ def generate_html_report(results: List[Dict[str, str]], output_dir: Path):
                 </div>
             </div>
             <div class="debug-link">
-                <a href="{res['xml_path']}" target="_blank">View Generated MLT XML</a>
+                <!-- FIX: Update link to point to the directory and change the text -->
+                <a href="{res['xml_dir_path']}" target="_blank">View Generated MLT XMLs</a>
             </div>
         </div>
         """

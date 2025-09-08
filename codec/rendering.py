@@ -4,30 +4,53 @@ import os
 import subprocess
 import logging
 import platform
-from typing import TYPE_CHECKING, List, Dict, Any
+from pathlib import Path
+from typing import TYPE_CHECKING, List, Dict, Any, Optional
 
 if TYPE_CHECKING:
     from .state import State, TimelineClip
 
+# --- MODIFIED: Helper function for logging MLT XML ---
+def _log_mlt_xml(state: 'State', xml_content: str, filename: str, log_dir: Optional[Path] = None):
+    """Saves the generated MLT XML to a specified log directory or the job's default log directory."""
+    try:
+        # Prioritize the explicitly provided log_dir (for tests), otherwise derive from state (for agent).
+        if log_dir:
+            mlt_logs_dir = log_dir / "mlt_logs"
+        else:
+            # Fallback logic for the agent runtime
+            job_dir = Path(state.assets_directory).parent
+            job_id = job_dir.name
+            mlt_logs_dir = Path("logs") / job_id / "mlt_logs"
+        
+        mlt_logs_dir.mkdir(parents=True, exist_ok=True)
+        
+        log_path = mlt_logs_dir / filename
+        with open(log_path, "w", encoding="utf-8") as f:
+            f.write(xml_content)
+        logging.info(f"Logged MLT XML for debugging to: {log_path}")
+    except Exception as e:
+        # This is a non-critical operation, so we just log the error and continue.
+        logging.warning(f"Could not log MLT XML file '{filename}': {e}")
+
+
 # --- Public API ---
 
-def render_final_video(state: 'State', output_path: str, tmpdir: str) -> None:
+def render_final_video(state: 'State', output_path: str, tmpdir: str, log_dir: Optional[Path] = None) -> None:
     """
     Renders the complete timeline from the state object to a final video file.
-
-    This function generates an MLT XML project in memory, writes it to a temporary
-    file, and then invokes the `melt` command-line tool to perform the render,
-    applying hardware acceleration where available.
 
     Args:
         state: The current agent state containing the timeline.
         output_path: The absolute path for the final rendered video file.
         tmpdir: A temporary directory for intermediate files like the MLT project.
+        log_dir: Optional. A specific directory to save MLT XML logs to.
     """
     logging.info("Starting final render process using MLT...")
     
     try:
         mlt_xml_content = _state_to_mlt_xml(state)
+        _log_mlt_xml(state, mlt_xml_content, "final_render.mlt", log_dir)
         mlt_project_path = os.path.join(tmpdir, "project.mlt")
         with open(mlt_project_path, "w") as f:
             f.write(mlt_xml_content)
@@ -48,7 +71,7 @@ def render_final_video(state: 'State', output_path: str, tmpdir: str) -> None:
             logging.info("Apple Silicon detected. Using 'h264_videotoolbox' hardware encoder.")
             consumer_args.append("vcodec=h264_videotoolbox")
         else:
-            logging.info("Using 'libx264' software encoder with 'ultrafast' preset.")
+            logging.info("Using 'libx24' software encoder with 'ultrafast' preset.")
             consumer_args.extend([
                 "vcodec=libx264",
                 "preset=ultrafast",
@@ -70,24 +93,23 @@ def render_final_video(state: 'State', output_path: str, tmpdir: str) -> None:
         raise
 
 
-def render_preview_frame(state: 'State', timeline_sec: float, output_path: str, tmpdir: str) -> None:
+def render_preview_frame(state: 'State', timeline_sec: float, output_path: str, tmpdir: str, log_dir: Optional[Path] = None) -> None:
     """
     Renders a single, fully composited frame from the timeline at a specific time.
-
-    This function uses the exact same MLT XML generation logic as the final render,
-    ensuring that the preview frame is a perfect representation of the final output.
-    It instructs `melt` to render only the single requested frame as a PNG image.
 
     Args:
         state: The current agent state containing the timeline.
         timeline_sec: The time in seconds on the main timeline to render.
         output_path: The absolute path where the output PNG image will be saved.
         tmpdir: A temporary directory for the MLT project file.
+        log_dir: Optional. A specific directory to save MLT XML logs to.
     """
     logging.info(f"Rendering preview frame at {timeline_sec:.2f}s using MLT...")
 
     try:
         mlt_xml_content = _state_to_mlt_xml(state)
+        log_filename = f"preview_frame_at_{timeline_sec:.3f}s.mlt"
+        _log_mlt_xml(state, mlt_xml_content, log_filename, log_dir)
         mlt_project_path = os.path.join(tmpdir, f"preview_{timeline_sec:.3f}.mlt")
         with open(mlt_project_path, "w") as f:
             f.write(mlt_xml_content)
@@ -96,9 +118,6 @@ def render_preview_frame(state: 'State', timeline_sec: float, output_path: str, 
         frame_num = int(round(timeline_sec * fps))
 
         # The 'out' property for melt is inclusive. Setting in=out renders one frame.
-        # Use PNG for preview frames to avoid known instability with MJPEG on some
-        # platforms/MLT builds (segfaults and pixel format warnings). PNG is
-        # intra-frame, lossless, and reliable for single-frame output.
         command = [
             "melt",
             mlt_project_path,
@@ -123,8 +142,8 @@ def render_preview_frame(state: 'State', timeline_sec: float, output_path: str, 
         raise
 
 
-# --- Private MLT XML Generation Logic ---
-
+# --- Private MLT XML Generation Logic (Unchanged) ---
+# ... (the rest of the file remains the same)
 def _state_to_mlt_xml(state: 'State') -> str:
     """
     Translates the agent's State object into a complete MLT XML project string.
@@ -261,8 +280,6 @@ def _state_to_mlt_xml(state: 'State') -> str:
     
     return "\n".join(xml_parts)
 
-
-# --- Keyframe Generation Helpers ---
 
 def _get_master_keyframes(clip: 'TimelineClip') -> List[Dict[str, Any]]:
     """
